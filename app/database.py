@@ -1,4 +1,5 @@
 from supabase import Client, create_client
+from supabase.lib.client_options import ClientOptions
 
 from .config import settings
 
@@ -48,11 +49,17 @@ def get_supabase() -> Client:
 
     # Cliente exclusivamente server-side.
     # Não utiliza nem persiste sessão de usuário.
+    #
+    # O supabase-py espera um objeto ClientOptions.
+    # Passar um dict aqui causa:
+    # AttributeError: 'dict' object has no attribute 'headers'
+    options = ClientOptions(
+        auto_refresh_token=False,
+        persist_session=False,
+    )
+
     return create_client(
         supabase_url,
         supabase_key,
-        options={
-            "auto_refresh_token": False,
-            "persist_session": False,
-        },
+        options=options,
     )
