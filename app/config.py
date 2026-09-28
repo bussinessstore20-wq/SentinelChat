@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     telegram_webhook_path: str = "/telegram/webhook"
 
     supabase_url: str = ""
+
+    # Nova Secret Key do Supabase para uso exclusivo no backend.
+    supabase_secret_key: str = ""
+
+    # Mantida apenas como fallback temporário.
     supabase_service_role_key: str = ""
 
     app_env: str = "production"
