@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from telegram import Update
 from telegram.ext import (
@@ -13,7 +13,11 @@ from telegram.ext import (
 
 from .config import settings
 from .database import get_supabase
-from .moderation import MemberProfile, ModerationRule, analyze_member
+from .moderation import (
+    MemberProfile,
+    ModerationRule,
+    analyze_member,
+)
 
 
 telegram_app = (
@@ -25,13 +29,12 @@ telegram_app = (
 
 def ensure_chat_registered(chat) -> tuple[str, ModerationRule]:
     """
-    Garante que o grupo exista no Supabase e que tenha
-    uma configuração de moderação.
+    Garante que o grupo exista no Supabase
+    e tenha uma configuração de moderação.
     """
 
     db = get_supabase()
 
-    # Workspace principal do SentinelChat
     workspace_result = (
         db.table("workspaces")
         .select("id")
@@ -51,7 +54,6 @@ def ensure_chat_registered(chat) -> tuple[str, ModerationRule]:
 
         workspace_id = workspace_result.data[0]["id"]
 
-    # Procura o grupo
     chat_result = (
         db.table("telegram_chats")
         .select("id")
@@ -80,7 +82,6 @@ def ensure_chat_registered(chat) -> tuple[str, ModerationRule]:
 
         chat_id = chat_insert.data[0]["id"]
 
-    # Procura as regras do grupo
     rule_result = (
         db.table("moderation_rules")
         .select(
@@ -99,10 +100,7 @@ def ensure_chat_registered(chat) -> tuple[str, ModerationRule]:
 
     if rule_result.data:
         row = rule_result.data[0]
-
     else:
-        # Configuração inicial segura:
-        # tudo ligado e DRY-RUN ativado.
         row = {
             "require_photo": True,
             "require_first_name": True,
@@ -120,9 +118,7 @@ def ensure_chat_registered(chat) -> tuple[str, ModerationRule]:
             }
         ).execute()
 
-    rules = ModerationRule(**row)
-
-    return chat_id, rules
+    return chat_id, ModerationRule(**row)
 
 
 async def start(
@@ -205,8 +201,8 @@ async def status(
 
     except Exception as exc:
         await update.message.reply_text(
-            "⚠️ SentinelChat está online, mas ocorreu um "
-            "erro ao consultar o grupo.\n\n"
+            "⚠️ SentinelChat está online, mas ocorreu "
+            "um erro ao consultar o grupo.\n\n"
             f"Erro: {type(exc).__name__}"
         )
 
@@ -242,7 +238,6 @@ async def handle_new_members(
 
         for user in update.message.new_chat_members:
 
-            # Verifica se é administrador
             member = await context.bot.get_chat_member(
                 chat.id,
                 user.id,
@@ -253,17 +248,13 @@ async def handle_new_members(
                 "creator",
             )
 
-            # Verifica foto de perfil
             photos = await context.bot.get_user_profile_photos(
                 user.id,
                 limit=1,
             )
 
-            has_photo = bool(
-                photos.total_count
-            )
+            has_photo = bool(photos.total_count)
 
-            # Cria o perfil analisado
             profile = MemberProfile(
                 user_id=user.id,
                 username=user.username,
@@ -273,7 +264,6 @@ async def handle_new_members(
                 is_admin=is_admin,
             )
 
-            # Executa as regras
             violations = analyze_member(
                 profile,
                 rules,
@@ -283,10 +273,8 @@ async def handle_new_members(
 
             if violations:
 
-                # Por padrão, o evento fica em revisão.
                 action_taken = "review"
 
-                # Só executa punição se DRY-RUN estiver desligado.
                 if not rules.dry_run and not is_admin:
 
                     if rules.action == "restrict":
@@ -322,7 +310,6 @@ async def handle_new_members(
 
                         action_taken = "ban"
 
-            # Salva a análise no Supabase
             db.table("member_scans").insert(
                 {
                     "chat_id": chat_id,
@@ -337,7 +324,6 @@ async def handle_new_members(
                 }
             ).execute()
 
-            # Registra evento somente quando houver violação
             if violations:
 
                 db.table("moderation_events").insert(
@@ -353,12 +339,9 @@ async def handle_new_members(
                     }
                 ).execute()
 
-                # Durante o DRY-RUN apenas avisa.
                 if rules.dry_run:
 
-                    reasons = ", ".join(
-                        violations
-                    )
+                    reasons = ", ".join(violations)
 
                     await update.message.reply_text(
                         "🔎 SentinelChat detectou uma "
@@ -372,7 +355,6 @@ async def handle_new_members(
 
     except Exception as exc:
 
-        # Tenta registrar o erro no Supabase
         try:
             db = get_supabase()
 
@@ -391,22 +373,16 @@ async def handle_new_members(
             pass
 
 
-# ============================
+# ==========================================
 # HANDLERS DO TELEGRAM
-# ============================
+# ==========================================
 
 telegram_app.add_handler(
-    CommandHandler(
-        "start",
-        start,
-    )
+    CommandHandler("start", start)
 )
 
 telegram_app.add_handler(
-    CommandHandler(
-        "status",
-        status,
-    )
+    CommandHandler("status", status)
 )
 
 telegram_app.add_handler(
@@ -417,9 +393,9 @@ telegram_app.add_handler(
 )
 
 
-# ============================
-# FASTAPI / LIFESPAN
-# ============================
+# ==========================================
+# FASTAPI / WEBHOOK
+# ==========================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -427,13 +403,30 @@ async def lifespan(app: FastAPI):
     await telegram_app.initialize()
     await telegram_app.start()
 
-    if settings.telegram_mode == "polling":
-        await telegram_app.updater.start_polling()
+    # IMPORTANTE:
+    # Não usamos start_polling().
+    #
+    # O Telegram enviará os updates diretamente
+    # para /telegram/webhook.
+
+    webhook_url = settings.telegram_webhook_url.strip()
+
+    if webhook_url:
+
+        full_webhook_url = (
+            webhook_url.rstrip("/")
+            + settings.telegram_webhook_path
+        )
+
+        await telegram_app.bot.set_webhook(
+            url=full_webhook_url,
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+        )
 
     yield
 
-    if settings.telegram_mode == "polling":
-        await telegram_app.updater.stop()
+    await telegram_app.bot.delete_webhook()
 
     await telegram_app.stop()
     await telegram_app.shutdown()
@@ -441,7 +434,7 @@ async def lifespan(app: FastAPI):
 
 api = FastAPI(
     title="SentinelChat",
-    version="0.2.0",
+    version="0.3.0",
     description=(
         "Telegram community protection "
         "and moderation platform."
@@ -453,6 +446,7 @@ api = FastAPI(
 class HealthResponse(BaseModel):
     status: str
     environment: str
+    telegram_mode: str
 
 
 @api.get("/")
@@ -460,9 +454,11 @@ async def root():
     return {
         "name": "SentinelChat",
         "status": "online",
-        "version": "0.2.0",
+        "version": "0.3.0",
+        "telegram_mode": settings.telegram_mode,
         "features": [
             "telegram",
+            "webhook",
             "moderation",
             "supabase",
             "dry_run",
@@ -479,4 +475,22 @@ async def health():
     return HealthResponse(
         status="ok",
         environment=settings.app_env,
+        telegram_mode=settings.telegram_mode,
     )
+
+
+@api.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+
+    data = await request.json()
+
+    update = Update.de_json(
+        data,
+        telegram_app.bot,
+    )
+
+    await telegram_app.process_update(update)
+
+    return {
+        "ok": True
+    }
