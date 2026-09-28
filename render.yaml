@@ -12,9 +12,15 @@ services:
         sync: false
 
       - key: TELEGRAM_MODE
-        value: polling
+        value: webhook
+
+      - key: TELEGRAM_WEBHOOK_URL
+        sync: false
 
       - key: SUPABASE_URL
+        sync: false
+
+      - key: SUPABASE_SECRET_KEY
         sync: false
 
       - key: SUPABASE_SERVICE_ROLE_KEY
