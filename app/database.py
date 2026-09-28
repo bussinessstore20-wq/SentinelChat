@@ -1,4 +1,3 @@
-```python
 from supabase import Client, create_client
 
 from .config import settings
@@ -61,4 +60,3 @@ def get_supabase() -> Client:
         supabase_url,
         supabase_key,
     )
-```
