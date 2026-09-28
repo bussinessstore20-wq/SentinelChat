@@ -58,6 +58,7 @@ def redact_error(exc):
     secrets = [
         settings.telegram_bot_token,
         settings.supabase_service_role_key,
+        settings.supabase_secret_key,
     ]
 
     for secret in secrets:
@@ -677,6 +678,51 @@ async def lifespan(app: FastAPI):
     await telegram_app.initialize()
 
     await telegram_app.start()
+
+    # ==================================================
+    # DIAGNÓSTICO SEGURO DO BOT
+    # ==================================================
+    #
+    # Confirma qual bot pertence ao token configurado
+    # no Render sem jamais registrar o token.
+    #
+
+    try:
+
+        bot_info = await telegram_app.bot.get_me()
+
+        logger.info(
+            "========================================"
+        )
+
+        logger.info(
+            "BOT TELEGRAM: @%s",
+            bot_info.username,
+        )
+
+        logger.info(
+            "BOT ID TELEGRAM: %s",
+            bot_info.id,
+        )
+
+        logger.info(
+            "BOT NOME: %s",
+            bot_info.first_name,
+        )
+
+        logger.info(
+            "========================================"
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Falha ao identificar o bot Telegram"
+        )
+
+    # ==================================================
+    # WEBHOOK
+    # ==================================================
 
     webhook_url = (
         settings.telegram_webhook_url
