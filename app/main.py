@@ -27,80 +27,141 @@ telegram_app = (
 )
 
 
-def ensure_chat_registered(chat) -> tuple[str, ModerationRule]:
+def ensure_chat_registered(chat):
     """
-    Garante que o grupo exista no Supabase
-    e tenha uma configuração de moderação.
+    Registra o grupo no Supabase e garante suas regras.
+    Retorna:
+        chat_id, ModerationRule
     """
 
     db = get_supabase()
 
-    workspace_result = (
-        db.table("workspaces")
-        .select("id")
-        .eq("name", "SentinelChat")
-        .limit(1)
-        .execute()
-    )
+    # --------------------------------------------------
+    # 1. WORKSPACE
+    # --------------------------------------------------
+
+    try:
+        workspace_result = (
+            db.table("workspaces")
+            .select("id")
+            .eq("name", "SentinelChat")
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"SUPABASE_WORKSPACES_SELECT: {type(exc).__name__}: {exc}"
+        ) from exc
 
     if workspace_result.data:
         workspace_id = workspace_result.data[0]["id"]
+
     else:
-        workspace_result = (
-            db.table("workspaces")
-            .insert({"name": "SentinelChat"})
-            .execute()
-        )
+        try:
+            workspace_result = (
+                db.table("workspaces")
+                .insert(
+                    {
+                        "name": "SentinelChat",
+                    }
+                )
+                .execute()
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"SUPABASE_WORKSPACES_INSERT: {type(exc).__name__}: {exc}"
+            ) from exc
+
+        if not workspace_result.data:
+            raise RuntimeError(
+                "SUPABASE_WORKSPACES_INSERT: nenhum registro retornado"
+            )
 
         workspace_id = workspace_result.data[0]["id"]
 
-    chat_result = (
-        db.table("telegram_chats")
-        .select("id")
-        .eq("workspace_id", workspace_id)
-        .eq("telegram_chat_id", chat.id)
-        .limit(1)
-        .execute()
-    )
+    # --------------------------------------------------
+    # 2. TELEGRAM CHAT
+    # --------------------------------------------------
+
+    try:
+        chat_result = (
+            db.table("telegram_chats")
+            .select("id")
+            .eq("workspace_id", workspace_id)
+            .eq("telegram_chat_id", chat.id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"SUPABASE_TELEGRAM_CHATS_SELECT: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
     if chat_result.data:
         chat_id = chat_result.data[0]["id"]
+
     else:
-        chat_insert = (
-            db.table("telegram_chats")
-            .insert(
-                {
-                    "workspace_id": workspace_id,
-                    "telegram_chat_id": chat.id,
-                    "title": chat.title or "Sem título",
-                    "chat_type": chat.type,
-                    "is_active": True,
-                }
+        try:
+            chat_insert = (
+                db.table("telegram_chats")
+                .insert(
+                    {
+                        "workspace_id": workspace_id,
+                        "telegram_chat_id": chat.id,
+                        "title": chat.title or "Sem título",
+                        "chat_type": chat.type,
+                        "is_active": True,
+                    }
+                )
+                .execute()
             )
-            .execute()
-        )
+        except Exception as exc:
+            raise RuntimeError(
+                f"SUPABASE_TELEGRAM_CHATS_INSERT: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        if not chat_insert.data:
+            raise RuntimeError(
+                "SUPABASE_TELEGRAM_CHATS_INSERT: "
+                "nenhum registro retornado"
+            )
 
         chat_id = chat_insert.data[0]["id"]
 
-    rule_result = (
-        db.table("moderation_rules")
-        .select(
-            "require_photo, "
-            "require_first_name, "
-            "require_last_name, "
-            "require_username, "
-            "ignore_admins, "
-            "action, "
-            "dry_run"
+    # --------------------------------------------------
+    # 3. REGRAS
+    # --------------------------------------------------
+
+    try:
+        rule_result = (
+            db.table("moderation_rules")
+            .select(
+                "require_photo,"
+                "require_first_name,"
+                "require_last_name,"
+                "require_username,"
+                "ignore_admins,"
+                "action,"
+                "dry_run"
+            )
+            .eq("chat_id", chat_id)
+            .limit(1)
+            .execute()
         )
-        .eq("chat_id", chat_id)
-        .limit(1)
-        .execute()
-    )
+    except Exception as exc:
+        raise RuntimeError(
+            f"SUPABASE_MODERATION_RULES_SELECT: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
     if rule_result.data:
+
         row = rule_result.data[0]
+
     else:
+
         row = {
             "require_photo": True,
             "require_first_name": True,
@@ -111,14 +172,31 @@ def ensure_chat_registered(chat) -> tuple[str, ModerationRule]:
             "dry_run": True,
         }
 
-        db.table("moderation_rules").insert(
-            {
-                "chat_id": chat_id,
-                **row,
-            }
-        ).execute()
+        try:
+            (
+                db.table("moderation_rules")
+                .insert(
+                    {
+                        "chat_id": chat_id,
+                        **row,
+                    }
+                )
+                .execute()
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"SUPABASE_MODERATION_RULES_INSERT: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
 
-    return chat_id, ModerationRule(**row)
+    try:
+        rules = ModerationRule(**row)
+    except Exception as exc:
+        raise RuntimeError(
+            f"MODERATION_RULE_PARSE: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    return chat_id, rules
 
 
 async def start(
@@ -143,67 +221,106 @@ async def status(
     if not update.message:
         return
 
+    chat = update.effective_chat
+
+    if not chat:
+        return
+
+    if chat.type not in ("group", "supergroup"):
+
+        await update.message.reply_text(
+            "⚠️ O /status precisa ser executado "
+            "dentro de um grupo ou supergrupo."
+        )
+
+        return
+
     try:
-        chat = update.effective_chat
 
-        if chat and chat.type in ("group", "supergroup"):
-            chat_id, rules = ensure_chat_registered(chat)
+        chat_id, rules = ensure_chat_registered(chat)
 
-            db = get_supabase()
+        db = get_supabase()
 
+        # ----------------------------------------------
+        # CONTAGEM DE ANÁLISES
+        # ----------------------------------------------
+
+        try:
             scans = (
                 db.table("member_scans")
                 .select("id", count="exact")
                 .eq("chat_id", chat_id)
                 .execute()
             )
+        except Exception as exc:
+            raise RuntimeError(
+                f"SUPABASE_MEMBER_SCANS_SELECT: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
 
+        # ----------------------------------------------
+        # CONTAGEM DE EVENTOS
+        # ----------------------------------------------
+
+        try:
             events = (
                 db.table("moderation_events")
                 .select("id", count="exact")
                 .eq("chat_id", chat_id)
                 .execute()
             )
+        except Exception as exc:
+            raise RuntimeError(
+                f"SUPABASE_MODERATION_EVENTS_SELECT: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
 
-            mode = (
-                "DRY-RUN (nenhuma punição)"
-                if rules.dry_run
-                else rules.action.upper()
-            )
-
-            await update.message.reply_text(
-                "🛡️ SentinelChat — Status\n\n"
-                "🟢 Bot: online\n"
-                "🟢 Grupo: conectado\n"
-                f"🔎 Modo: {mode}\n"
-                f"👤 Análises: {scans.count or 0}\n"
-                f"⚠️ Eventos: {events.count or 0}\n\n"
-                "Regras ativas:\n"
-                f"{'✅' if rules.require_photo else '⬜'} "
-                "Foto de perfil\n"
-                f"{'✅' if rules.require_first_name else '⬜'} "
-                "Primeiro nome\n"
-                f"{'✅' if rules.require_last_name else '⬜'} "
-                "Sobrenome\n"
-                f"{'✅' if rules.require_username else '⬜'} "
-                "Username\n"
-                f"{'✅' if rules.ignore_admins else '⬜'} "
-                "Ignorar administradores"
-            )
-
-            return
+        mode = (
+            "DRY-RUN — nenhuma punição"
+            if rules.dry_run
+            else rules.action.upper()
+        )
 
         await update.message.reply_text(
-            "✅ SentinelChat online.\n\n"
-            "Adicione o bot a um grupo para iniciar "
-            "a proteção."
+            "🛡️ SentinelChat — Status\n\n"
+            "🟢 Bot: online\n"
+            "🟢 Grupo: conectado\n"
+            f"🔎 Modo: {mode}\n"
+            f"👤 Análises: {scans.count or 0}\n"
+            f"⚠️ Eventos: {events.count or 0}\n\n"
+            "Regras ativas:\n"
+            f"{'✅' if rules.require_photo else '⬜'} "
+            "Foto de perfil\n"
+            f"{'✅' if rules.require_first_name else '⬜'} "
+            "Primeiro nome\n"
+            f"{'✅' if rules.require_last_name else '⬜'} "
+            "Sobrenome\n"
+            f"{'✅' if rules.require_username else '⬜'} "
+            "Username\n"
+            f"{'✅' if rules.ignore_admins else '⬜'} "
+            "Ignorar administradores"
         )
 
     except Exception as exc:
+
+        error_text = f"{type(exc).__name__}: {exc}"
+
+        # Evita mostrar qualquer segredo caso apareça
+        # acidentalmente em uma mensagem de exceção.
+        for secret in (
+            settings.telegram_bot_token,
+            settings.supabase_service_role_key,
+        ):
+            if secret:
+                error_text = error_text.replace(
+                    secret,
+                    "[REDACTED]",
+                )
+
         await update.message.reply_text(
-            "⚠️ SentinelChat está online, mas ocorreu "
-            "um erro ao consultar o grupo.\n\n"
-            f"Erro: {type(exc).__name__}"
+            "⚠️ SentinelChat está online, "
+            "mas ocorreu um erro ao consultar o grupo.\n\n"
+            f"🔎 Diagnóstico:\n{error_text}"
         )
 
 
@@ -211,10 +328,6 @@ async def handle_new_members(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    """
-    Analisa novos membros que entram no grupo.
-    """
-
     if not update.message:
         return
 
@@ -232,6 +345,7 @@ async def handle_new_members(
     chat_id = None
 
     try:
+
         chat_id, rules = ensure_chat_registered(chat)
 
         db = get_supabase()
@@ -275,28 +389,31 @@ async def handle_new_members(
 
                 action_taken = "review"
 
+                # DRY-RUN continua impedindo punições.
                 if not rules.dry_run and not is_admin:
 
                     if rules.action == "restrict":
 
+                        from telegram import ChatPermissions
+
                         await context.bot.restrict_chat_member(
                             chat.id,
                             user.id,
-                            permissions={
-                                "can_send_messages": False,
-                                "can_send_audios": False,
-                                "can_send_documents": False,
-                                "can_send_photos": False,
-                                "can_send_videos": False,
-                                "can_send_video_notes": False,
-                                "can_send_voice_notes": False,
-                                "can_send_polls": False,
-                                "can_send_other_messages": False,
-                                "can_add_web_page_previews": False,
-                                "can_change_info": False,
-                                "can_invite_users": False,
-                                "can_pin_messages": False,
-                            },
+                            permissions=ChatPermissions(
+                                can_send_messages=False,
+                                can_send_audios=False,
+                                can_send_documents=False,
+                                can_send_photos=False,
+                                can_send_videos=False,
+                                can_send_video_notes=False,
+                                can_send_voice_notes=False,
+                                can_send_polls=False,
+                                can_send_other_messages=False,
+                                can_add_web_page_previews=False,
+                                can_change_info=False,
+                                can_invite_users=False,
+                                can_pin_messages=False,
+                            ),
                         )
 
                         action_taken = "restrict"
@@ -310,42 +427,64 @@ async def handle_new_members(
 
                         action_taken = "ban"
 
-            db.table("member_scans").insert(
-                {
-                    "chat_id": chat_id,
-                    "telegram_user_id": user.id,
-                    "username": user.username,
-                    "first_name": user.first_name,
-                    "last_name": user.last_name,
-                    "has_photo": has_photo,
-                    "is_admin": is_admin,
-                    "violations": violations,
-                    "action_taken": action_taken,
-                }
-            ).execute()
+            try:
+                (
+                    db.table("member_scans")
+                    .insert(
+                        {
+                            "chat_id": chat_id,
+                            "telegram_user_id": user.id,
+                            "username": user.username,
+                            "first_name": user.first_name,
+                            "last_name": user.last_name,
+                            "has_photo": has_photo,
+                            "is_admin": is_admin,
+                            "violations": violations,
+                            "action_taken": action_taken,
+                        }
+                    )
+                    .execute()
+                )
+            except Exception as exc:
+
+                raise RuntimeError(
+                    f"SUPABASE_MEMBER_SCANS_INSERT: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
 
             if violations:
 
-                db.table("moderation_events").insert(
-                    {
-                        "chat_id": chat_id,
-                        "telegram_user_id": user.id,
-                        "event_type": "member_violation",
-                        "details": {
-                            "violations": violations,
-                            "dry_run": rules.dry_run,
-                            "action": action_taken,
-                        },
-                    }
-                ).execute()
+                try:
+                    (
+                        db.table("moderation_events")
+                        .insert(
+                            {
+                                "chat_id": chat_id,
+                                "telegram_user_id": user.id,
+                                "event_type": "member_violation",
+                                "details": {
+                                    "violations": violations,
+                                    "dry_run": rules.dry_run,
+                                    "action": action_taken,
+                                },
+                            }
+                        )
+                        .execute()
+                    )
+                except Exception as exc:
+
+                    raise RuntimeError(
+                        f"SUPABASE_MODERATION_EVENTS_INSERT: "
+                        f"{type(exc).__name__}: {exc}"
+                    ) from exc
 
                 if rules.dry_run:
 
                     reasons = ", ".join(violations)
 
                     await update.message.reply_text(
-                        "🔎 SentinelChat detectou uma "
-                        "possível violação.\n\n"
+                        "🔎 SentinelChat detectou "
+                        "uma possível violação.\n\n"
                         f"👤 Usuário: {user.full_name}\n"
                         f"🆔 ID: {user.id}\n"
                         f"⚠️ Motivos: {reasons}\n\n"
@@ -355,27 +494,46 @@ async def handle_new_members(
 
     except Exception as exc:
 
-        try:
-            db = get_supabase()
+        error_text = f"{type(exc).__name__}: {exc}"
 
-            db.table("moderation_events").insert(
-                {
-                    "chat_id": chat_id,
-                    "event_type": "moderation_error",
-                    "details": {
-                        "error": type(exc).__name__,
-                        "message": str(exc),
-                    },
-                }
-            ).execute()
+        for secret in (
+            settings.telegram_bot_token,
+            settings.supabase_service_role_key,
+        ):
+            if secret:
+                error_text = error_text.replace(
+                    secret,
+                    "[REDACTED]",
+                )
+
+        try:
+
+            if chat_id:
+
+                db = get_supabase()
+
+                (
+                    db.table("moderation_events")
+                    .insert(
+                        {
+                            "chat_id": chat_id,
+                            "event_type": "moderation_error",
+                            "details": {
+                                "error": type(exc).__name__,
+                                "message": error_text,
+                            },
+                        }
+                    )
+                    .execute()
+                )
 
         except Exception:
             pass
 
 
-# ==========================================
-# HANDLERS DO TELEGRAM
-# ==========================================
+# ==================================================
+# TELEGRAM HANDLERS
+# ==================================================
 
 telegram_app.add_handler(
     CommandHandler("start", start)
@@ -393,21 +551,15 @@ telegram_app.add_handler(
 )
 
 
-# ==========================================
+# ==================================================
 # FASTAPI / WEBHOOK
-# ==========================================
+# ==================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
     await telegram_app.initialize()
     await telegram_app.start()
-
-    # IMPORTANTE:
-    # Não usamos start_polling().
-    #
-    # O Telegram enviará os updates diretamente
-    # para /telegram/webhook.
 
     webhook_url = settings.telegram_webhook_url.strip()
 
@@ -434,7 +586,7 @@ async def lifespan(app: FastAPI):
 
 api = FastAPI(
     title="SentinelChat",
-    version="0.3.0",
+    version="0.3.1",
     description=(
         "Telegram community protection "
         "and moderation platform."
@@ -451,10 +603,11 @@ class HealthResponse(BaseModel):
 
 @api.get("/")
 async def root():
+
     return {
         "name": "SentinelChat",
         "status": "online",
-        "version": "0.3.0",
+        "version": "0.3.1",
         "telegram_mode": settings.telegram_mode,
         "features": [
             "telegram",
@@ -492,5 +645,5 @@ async def telegram_webhook(request: Request):
     await telegram_app.process_update(update)
 
     return {
-        "ok": True
+        "ok": True,
     }
