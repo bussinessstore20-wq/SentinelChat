@@ -3,7 +3,7 @@ import logging
 
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
-from telegram import Update
+from telegram import Update, ChatPermissions
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -25,16 +25,16 @@ from .moderation import (
 # LOGGING
 # ==================================================
 
-logger = logging.getLogger("sentinelchat")
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 
+logger = logging.getLogger("sentinelchat")
+
 
 # ==================================================
-# TELEGRAM APPLICATION
+# TELEGRAM
 # ==================================================
 
 telegram_app = (
@@ -50,22 +50,24 @@ telegram_app = (
 
 def redact_error(exc):
     """
-    Remove possíveis segredos das mensagens de erro.
+    Remove tokens/chaves de mensagens de erro.
     """
 
-    error_text = f"{type(exc).__name__}: {exc}"
+    message = f"{type(exc).__name__}: {exc}"
 
-    for secret in (
+    secrets = [
         settings.telegram_bot_token,
         settings.supabase_service_role_key,
-    ):
+    ]
+
+    for secret in secrets:
         if secret:
-            error_text = error_text.replace(
+            message = message.replace(
                 secret,
                 "[REDACTED]",
             )
 
-    return error_text
+    return message
 
 
 # ==================================================
@@ -73,42 +75,42 @@ def redact_error(exc):
 # ==================================================
 
 def ensure_chat_registered(chat):
-    """
-    Registra o grupo no Supabase e garante suas regras.
-
-    Retorna:
-        chat_id, ModerationRule
-    """
 
     db = get_supabase()
 
     # --------------------------------------------------
-    # 1. WORKSPACE
+    # WORKSPACE
     # --------------------------------------------------
 
     try:
-        workspace_result = (
+
+        result = (
             db.table("workspaces")
             .select("id")
-            .eq("name", "SentinelChat")
+            .eq(
+                "name",
+                "SentinelChat",
+            )
             .limit(1)
             .execute()
         )
 
     except Exception as exc:
+
         raise RuntimeError(
-            f"SUPABASE_WORKSPACES_SELECT: "
-            f"{type(exc).__name__}: {exc}"
+            "SUPABASE_WORKSPACES_SELECT: "
+            + redact_error(exc)
         ) from exc
 
-    if workspace_result.data:
+    if result.data:
 
-        workspace_id = workspace_result.data[0]["id"]
+        workspace_id = result.data[0]["id"]
 
     else:
 
         try:
-            workspace_result = (
+
+            result = (
                 db.table("workspaces")
                 .insert(
                     {
@@ -119,47 +121,58 @@ def ensure_chat_registered(chat):
             )
 
         except Exception as exc:
+
             raise RuntimeError(
-                f"SUPABASE_WORKSPACES_INSERT: "
-                f"{type(exc).__name__}: {exc}"
+                "SUPABASE_WORKSPACES_INSERT: "
+                + redact_error(exc)
             ) from exc
 
-        if not workspace_result.data:
+        if not result.data:
+
             raise RuntimeError(
                 "SUPABASE_WORKSPACES_INSERT: "
                 "nenhum registro retornado"
             )
 
-        workspace_id = workspace_result.data[0]["id"]
+        workspace_id = result.data[0]["id"]
 
     # --------------------------------------------------
-    # 2. TELEGRAM CHAT
+    # TELEGRAM CHAT
     # --------------------------------------------------
 
     try:
-        chat_result = (
+
+        result = (
             db.table("telegram_chats")
             .select("id")
-            .eq("workspace_id", workspace_id)
-            .eq("telegram_chat_id", chat.id)
+            .eq(
+                "workspace_id",
+                workspace_id,
+            )
+            .eq(
+                "telegram_chat_id",
+                chat.id,
+            )
             .limit(1)
             .execute()
         )
 
     except Exception as exc:
+
         raise RuntimeError(
-            f"SUPABASE_TELEGRAM_CHATS_SELECT: "
-            f"{type(exc).__name__}: {exc}"
+            "SUPABASE_TELEGRAM_CHATS_SELECT: "
+            + redact_error(exc)
         ) from exc
 
-    if chat_result.data:
+    if result.data:
 
-        chat_id = chat_result.data[0]["id"]
+        chat_id = result.data[0]["id"]
 
     else:
 
         try:
-            chat_insert = (
+
+            result = (
                 db.table("telegram_chats")
                 .insert(
                     {
@@ -174,25 +187,28 @@ def ensure_chat_registered(chat):
             )
 
         except Exception as exc:
+
             raise RuntimeError(
-                f"SUPABASE_TELEGRAM_CHATS_INSERT: "
-                f"{type(exc).__name__}: {exc}"
+                "SUPABASE_TELEGRAM_CHATS_INSERT: "
+                + redact_error(exc)
             ) from exc
 
-        if not chat_insert.data:
+        if not result.data:
+
             raise RuntimeError(
                 "SUPABASE_TELEGRAM_CHATS_INSERT: "
                 "nenhum registro retornado"
             )
 
-        chat_id = chat_insert.data[0]["id"]
+        chat_id = result.data[0]["id"]
 
     # --------------------------------------------------
-    # 3. REGRAS
+    # REGRAS
     # --------------------------------------------------
 
     try:
-        rule_result = (
+
+        result = (
             db.table("moderation_rules")
             .select(
                 "require_photo,"
@@ -203,20 +219,24 @@ def ensure_chat_registered(chat):
                 "action,"
                 "dry_run"
             )
-            .eq("chat_id", chat_id)
+            .eq(
+                "chat_id",
+                chat_id,
+            )
             .limit(1)
             .execute()
         )
 
     except Exception as exc:
+
         raise RuntimeError(
-            f"SUPABASE_MODERATION_RULES_SELECT: "
-            f"{type(exc).__name__}: {exc}"
+            "SUPABASE_MODERATION_RULES_SELECT: "
+            + redact_error(exc)
         ) from exc
 
-    if rule_result.data:
+    if result.data:
 
-        row = rule_result.data[0]
+        row = result.data[0]
 
     else:
 
@@ -231,6 +251,7 @@ def ensure_chat_registered(chat):
         }
 
         try:
+
             (
                 db.table("moderation_rules")
                 .insert(
@@ -243,9 +264,10 @@ def ensure_chat_registered(chat):
             )
 
         except Exception as exc:
+
             raise RuntimeError(
-                f"SUPABASE_MODERATION_RULES_INSERT: "
-                f"{type(exc).__name__}: {exc}"
+                "SUPABASE_MODERATION_RULES_INSERT: "
+                + redact_error(exc)
             ) from exc
 
     try:
@@ -255,8 +277,8 @@ def ensure_chat_registered(chat):
     except Exception as exc:
 
         raise RuntimeError(
-            f"MODERATION_RULE_PARSE: "
-            f"{type(exc).__name__}: {exc}"
+            "MODERATION_RULE_PARSE: "
+            + redact_error(exc)
         ) from exc
 
     return chat_id, rules
@@ -277,8 +299,8 @@ async def start(
     await update.message.reply_text(
         "🛡️ SentinelChat ativo.\n\n"
         "Proteção e moderação da sua comunidade.\n\n"
-        "Adicione este bot como administrador de um grupo "
-        "para ativar a proteção."
+        "Adicione este bot como administrador "
+        "de um grupo para ativar a proteção."
     )
 
 
@@ -313,13 +335,11 @@ async def status(
 
     try:
 
-        chat_id, rules = ensure_chat_registered(chat)
+        chat_id, rules = ensure_chat_registered(
+            chat
+        )
 
         db = get_supabase()
-
-        # ----------------------------------------------
-        # ANÁLISES
-        # ----------------------------------------------
 
         scans = (
             db.table("member_scans")
@@ -333,10 +353,6 @@ async def status(
             )
             .execute()
         )
-
-        # ----------------------------------------------
-        # EVENTOS
-        # ----------------------------------------------
 
         events = (
             db.table("moderation_events")
@@ -415,21 +431,26 @@ async def handle_new_members(
         "group",
         "supergroup",
     ):
+
         return
 
     chat_id = None
 
     try:
 
-        chat_id, rules = ensure_chat_registered(chat)
+        chat_id, rules = ensure_chat_registered(
+            chat
+        )
 
         db = get_supabase()
 
         for user in update.message.new_chat_members:
 
-            member = await context.bot.get_chat_member(
-                chat.id,
-                user.id,
+            member = (
+                await context.bot.get_chat_member(
+                    chat.id,
+                    user.id,
+                )
             )
 
             is_admin = member.status in (
@@ -462,74 +483,85 @@ async def handle_new_members(
                 rules,
             )
 
-            action_taken = None
-
-            if violations:
-
-                action_taken = "review"
-
-                # DRY-RUN impede punições
-                if (
-                    not rules.dry_run
-                    and not is_admin
-                ):
-
-                    if rules.action == "restrict":
-
-                        from telegram import ChatPermissions
-
-                        await context.bot.restrict_chat_member(
-                            chat.id,
-                            user.id,
-                            permissions=ChatPermissions(
-                                can_send_messages=False,
-                                can_send_audios=False,
-                                can_send_documents=False,
-                                can_send_photos=False,
-                                can_send_videos=False,
-                                can_send_video_notes=False,
-                                can_send_voice_notes=False,
-                                can_send_polls=False,
-                                can_send_other_messages=False,
-                                can_add_web_page_previews=False,
-                                can_change_info=False,
-                                can_invite_users=False,
-                                can_pin_messages=False,
-                            ),
-                        )
-
-                        action_taken = "restrict"
-
-                    elif rules.action == "ban":
-
-                        await context.bot.ban_chat_member(
-                            chat.id,
-                            user.id,
-                        )
-
-                        action_taken = "ban"
-
-            # ------------------------------------------
-            # SALVAR SCAN
-            # ------------------------------------------
-
-            (
-                db.table("member_scans")
-                .insert(
-                    {
-                        "chat_id": chat_id,
-                        "telegram_user_id": user.id,
-                        "username": user.username,
-                        "first_name": user.first_name,
-                        "last_name": user.last_name,
-                        "has_photo": has_photo,
-                        "is_admin": is_admin,
-                        "violations": violations,
-                        "action_taken": action_taken,
-                    }
-                )
-                .execute()
+            action_taken = (
+                "review"
+                if violations
+                else None
             )
+
+            # ------------------------------------------
+            # AÇÃO DE MODERAÇÃO
+            # ------------------------------------------
+
+            if (
+                violations
+                and not rules.dry_run
+                and not is_admin
+            ):
+
+                if rules.action == "restrict":
+
+                    await context.bot.restrict_chat_member(
+                        chat.id,
+                        user.id,
+                        permissions=ChatPermissions(
+                            can_send_messages=False,
+                            can_send_audios=False,
+                            can_send_documents=False,
+                            can_send_photos=False,
+                            can_send_videos=False,
+                            can_send_video_notes=False,
+                            can_send_voice_notes=False,
+                            can_send_polls=False,
+                            can_send_other_messages=False,
+                            can_add_web_page_previews=False,
+                            can_change_info=False,
+                            can_invite_users=False,
+                            can_pin_messages=False,
+                        ),
+                    )
+
+                    action_taken = "restrict"
+
+                elif rules.action == "ban":
+
+                    await context.bot.ban_chat_member(
+                        chat.id,
+                        user.id,
+                    )
+
+                    action_taken = "ban"
+
+            # ------------------------------------------
+            # SCAN
+            # ------------------------------------------
+
+            try:
+
+                (
+                    db.table("member_scans")
+                    .insert(
+                        {
+                            "chat_id": chat_id,
+                            "telegram_user_id": user.id,
+                            "username": user.username,
+                            "first_name": user.first_name,
+                            "last_name": user.last_name,
+                            "has_photo": has_photo,
+                            "is_admin": is_admin,
+                            "violations": violations,
+                            "action_taken": action_taken,
+                        }
+                    )
+                    .execute()
+                )
+
+            except Exception as exc:
+
+                raise RuntimeError(
+                    "SUPABASE_MEMBER_SCANS_INSERT: "
+                    + redact_error(exc)
+                ) from exc
 
             # ------------------------------------------
             # EVENTO
@@ -537,22 +569,31 @@ async def handle_new_members(
 
             if violations:
 
-                (
-                    db.table("moderation_events")
-                    .insert(
-                        {
-                            "chat_id": chat_id,
-                            "telegram_user_id": user.id,
-                            "event_type": "member_violation",
-                            "details": {
-                                "violations": violations,
-                                "dry_run": rules.dry_run,
-                                "action": action_taken,
-                            },
-                        }
+                try:
+
+                    (
+                        db.table("moderation_events")
+                        .insert(
+                            {
+                                "chat_id": chat_id,
+                                "telegram_user_id": user.id,
+                                "event_type": "member_violation",
+                                "details": {
+                                    "violations": violations,
+                                    "dry_run": rules.dry_run,
+                                    "action": action_taken,
+                                },
+                            }
+                        )
+                        .execute()
                     )
-                    .execute()
-                )
+
+                except Exception as exc:
+
+                    raise RuntimeError(
+                        "SUPABASE_MODERATION_EVENTS_INSERT: "
+                        + redact_error(exc)
+                    ) from exc
 
                 if rules.dry_run:
 
@@ -577,28 +618,31 @@ async def handle_new_members(
 
             try:
 
-                get_supabase().table(
-                    "moderation_events"
-                ).insert(
-                    {
-                        "chat_id": chat_id,
-                        "event_type": "moderation_error",
-                        "details": {
-                            "error": type(exc).__name__,
-                            "message": redact_error(exc),
-                        },
-                    }
-                ).execute()
+                (
+                    get_supabase()
+                    .table("moderation_events")
+                    .insert(
+                        {
+                            "chat_id": chat_id,
+                            "event_type": "moderation_error",
+                            "details": {
+                                "error": type(exc).__name__,
+                                "message": redact_error(exc),
+                            },
+                        }
+                    )
+                    .execute()
+                )
 
             except Exception:
 
                 logger.exception(
-                    "Falha ao registrar erro de moderação"
+                    "Falha ao registrar erro"
                 )
 
 
 # ==================================================
-# TELEGRAM HANDLERS
+# HANDLERS
 # ==================================================
 
 telegram_app.add_handler(
@@ -624,13 +668,11 @@ telegram_app.add_handler(
 
 
 # ==================================================
-# WEBHOOK LIFESPAN
+# WEBHOOK
 # ==================================================
 
 @asynccontextmanager
-async def lifespan(
-    app: FastAPI,
-):
+async def lifespan(app: FastAPI):
 
     await telegram_app.initialize()
 
@@ -660,7 +702,7 @@ async def lifespan(
     )
 
     logger.info(
-        "=========================================="
+        "========================================"
     )
 
     logger.info(
@@ -668,17 +710,17 @@ async def lifespan(
     )
 
     logger.info(
-        "Webhook configurado: %s",
+        "Webhook: %s",
         full_webhook_url,
     )
 
     logger.info(
-        "=========================================="
+        "========================================"
     )
 
     try:
 
-        # Remove configuração anterior
+        # Remove webhook anterior
         await telegram_app.bot.delete_webhook(
             drop_pending_updates=True
         )
@@ -687,15 +729,15 @@ async def lifespan(
             "Webhook anterior removido."
         )
 
-        # Configura webhook novo
+        # Cria webhook novo
         await telegram_app.bot.set_webhook(
             url=full_webhook_url,
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=False,
         )
 
-        # Confirma configuração no Telegram
-        webhook_info = (
+        # Confirma com o Telegram
+        info = (
             await telegram_app.bot.get_webhook_info()
         )
 
@@ -704,29 +746,29 @@ async def lifespan(
         )
 
         logger.info(
-            "URL Telegram: %s",
-            webhook_info.url,
+            "URL: %s",
+            info.url,
         )
 
         logger.info(
-            "Updates pendentes: %s",
-            webhook_info.pending_update_count,
+            "Pending: %s",
+            info.pending_update_count,
         )
 
         logger.info(
-            "Último erro Telegram: %s",
-            webhook_info.last_error_message,
+            "Último erro: %s",
+            info.last_error_message,
         )
 
         logger.info(
             "Data último erro: %s",
-            webhook_info.last_error_date,
+            info.last_error_date,
         )
 
     except Exception:
 
         logger.exception(
-            "Falha ao configurar webhook do Telegram"
+            "Falha ao configurar webhook"
         )
 
         await telegram_app.stop()
@@ -736,15 +778,7 @@ async def lifespan(
 
     yield
 
-    # ----------------------------------------------
-    # SHUTDOWN
-    # ----------------------------------------------
-
     try:
-
-        logger.info(
-            "Removendo webhook do Telegram..."
-        )
 
         await telegram_app.bot.delete_webhook()
 
@@ -761,7 +795,7 @@ async def lifespan(
 
 api = FastAPI(
     title="SentinelChat",
-    version="0.3.2",
+    version="0.3.3",
     description=(
         "Telegram community protection "
         "and moderation platform."
@@ -787,7 +821,7 @@ async def root():
     return {
         "name": "SentinelChat",
         "status": "online",
-        "version": "0.3.2",
+        "version": "0.3.3",
         "telegram_mode": settings.telegram_mode,
         "features": [
             "telegram",
@@ -828,4 +862,79 @@ async def webhook_diagnostic():
         )
 
         configured_url = (
-            sett
+            settings.telegram_webhook_url.rstrip("/")
+            + settings.telegram_webhook_path
+        )
+
+        return {
+            "ok": True,
+            "telegram_mode": settings.telegram_mode,
+            "configured_url": configured_url,
+            "telegram_url": info.url,
+            "pending_update_count": (
+                info.pending_update_count
+            ),
+            "last_error_message": (
+                info.last_error_message
+            ),
+            "last_error_date": (
+                info.last_error_date
+            ),
+            "max_connections": (
+                info.max_connections
+            ),
+        }
+
+    except Exception as exc:
+
+        logger.exception(
+            "Erro consultando webhook"
+        )
+
+        return {
+            "ok": False,
+            "error": redact_error(exc),
+        }
+
+
+# ==================================================
+# ENDPOINT DO TELEGRAM
+# ==================================================
+
+@api.post(
+    "/telegram/webhook"
+)
+async def telegram_webhook(
+    request: Request,
+):
+
+    data = await request.json()
+
+    update_id = data.get(
+        "update_id"
+    )
+
+    logger.info(
+        "Telegram webhook recebido: "
+        "update_id=%s",
+        update_id,
+    )
+
+    update = Update.de_json(
+        data,
+        telegram_app.bot,
+    )
+
+    await telegram_app.process_update(
+        update
+    )
+
+    logger.info(
+        "Telegram webhook processado: "
+        "update_id=%s",
+        update_id,
+    )
+
+    return {
+        "ok": True,
+    }
