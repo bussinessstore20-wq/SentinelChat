@@ -66,9 +66,17 @@ async def auth_signup(payload: dict):
         if not user:
             raise ValueError("signup failed")
         db = get_supabase()
-        is_admin = bool(settings.saas_admin_email.strip()) and email == settings.saas_admin_email.strip().lower()
+        existing_admins = db.table("profiles").select("id").eq("role", "admin").limit(1).execute().data or []
+        is_admin = (bool(settings.saas_admin_email.strip()) and email == settings.saas_admin_email.strip().lower()) or not existing_admins
         profile = db.table("profiles").update({"full_name": full_name, "role": "admin" if is_admin else "customer"}).eq("id", str(user.id)).execute()
-        workspace = db.table("workspaces").insert({"name": f"{full_name or email.split('@')[0]} — Workspace", "owner_id": str(user.id)}).execute().data
+        if is_admin:
+            legacy = db.table("workspaces").select("id,owner_id").is_("owner_id", "null").limit(1).execute().data or []
+            if legacy:
+                workspace = db.table("workspaces").update({"owner_id": str(user.id), "name": legacy[0].get("id") and "SentinelChat — Administração"}).eq("id", legacy[0]["id"]).execute().data
+            else:
+                workspace = db.table("workspaces").insert({"name": f"{full_name or email.split('@')[0]} — Workspace", "owner_id": str(user.id)}).execute().data
+        else:
+            workspace = db.table("workspaces").insert({"name": f"{full_name or email.split('@')[0]} — Workspace", "owner_id": str(user.id)}).execute().data
         if workspace:
             workspace_id = workspace[0]["id"]
             db.table("workspace_members").insert({"workspace_id": workspace_id, "user_id": str(user.id), "role": "owner"}).execute()
