@@ -6,23 +6,20 @@ class Settings(BaseSettings):
 
     # Webhook é o modo recomendado para o SentinelChat no Render.
     telegram_mode: str = "webhook"
-
-    # URL pública do serviço no Render.
     telegram_webhook_url: str = ""
-
-    # Caminho utilizado pelo Telegram para entregar os updates.
     telegram_webhook_path: str = "/telegram/webhook"
 
     supabase_url: str = ""
 
-    # Nova Secret Key do Supabase para uso exclusivo no backend.
+    # Chave privada usada exclusivamente pelo backend.
     supabase_secret_key: str = ""
-
-    # Mantida apenas como fallback temporário.
     supabase_service_role_key: str = ""
 
-    # Token privado para proteger o painel web.
-    # Nunca expor este valor no frontend, no GitHub ou no chat.
+    # Chave publicável usada somente para inicializar o Supabase Auth no navegador.
+    # Nunca usar a Secret Key no frontend.
+    supabase_publishable_key: str = ""
+
+    # Token privado do painel ADM legado.
     dashboard_token: str = ""
 
     app_env: str = "production"
