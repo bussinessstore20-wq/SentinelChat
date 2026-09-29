@@ -28,3 +28,6 @@ services:
 
       - key: APP_ENV
         value: production
+
+      - key: DASHBOARD_TOKEN
+        sync: false
