@@ -24,8 +24,14 @@ def current_user(authorization: str | None):
         raise HTTPException(401, "Sessão expirada. Faça login novamente.")
 
 def check_token(authorization: str | None):
-    # Compatibilidade temporária: endpoints antigos passam a exigir Supabase Auth.
-    return current_user(authorization)
+    # Login temporariamente desativado na interface.
+    # Mantemos a autenticação pronta para ser reativada depois.
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            return current_user(authorization)
+        except HTTPException:
+            return None
+    return None
 
 def require_admin(authorization: str | None):
     user = current_user(authorization)
@@ -266,11 +272,16 @@ async def dashboard():
 async def chats(authorization: str | None = Header(default=None)):
     user = check_token(authorization)
     db = get_supabase()
-    memberships = db.table("workspace_members").select("workspace_id").eq("user_id", str(user.id)).execute().data or []
-    workspace_ids = [m.get("workspace_id") for m in memberships if m.get("workspace_id")]
-    if not workspace_ids:
-        return {"ok": True, "chats": []}
-    rows = db.table("telegram_chats").select("id,telegram_chat_id,title,chat_type,is_active").eq("is_active", True).in_("workspace_id", workspace_ids).order("title").execute().data or []
+    if user:
+        memberships = db.table("workspace_members").select("workspace_id").eq("user_id", str(user.id)).execute().data or []
+        workspace_ids = [m.get("workspace_id") for m in memberships if m.get("workspace_id")]
+        if workspace_ids:
+            rows = db.table("telegram_chats").select("id,telegram_chat_id,title,chat_type,is_active").eq("is_active", True).in_("workspace_id", workspace_ids).order("title").execute().data or []
+        else:
+            rows = []
+    else:
+        # Acesso temporário direto ao painel enquanto a tela de login está desativada.
+        rows = db.table("telegram_chats").select("id,telegram_chat_id,title,chat_type,is_active").eq("is_active", True).order("title").execute().data or []
     result = []
     for chat in rows:
         rules = db.table("moderation_rules").select("require_photo,require_first_name,require_last_name,require_username,ignore_admins,action,dry_run").eq("chat_id", chat["id"]).limit(1).execute()
