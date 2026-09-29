@@ -354,7 +354,31 @@ HTML = """<!doctype html>
 <title>SentinelChat — Painel</title>
 <style>
 body{margin:0;background:#08101d;color:#e8eef7;font-family:Arial,sans-serif}.wrap{max-width:1280px;margin:auto;padding:24px}.card{background:#101a2a;border:1px solid #26364d;border-radius:16px;padding:18px;margin-bottom:16px}header{display:flex;justify-content:space-between;align-items:center}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.stat{background:#0d1726;border:1px solid #293b54;border-radius:14px;padding:17px}.value{font-size:30px;font-weight:800}.layout{display:grid;grid-template-columns:220px 1fr;gap:16px}.nav button{display:block;width:100%;padding:12px;margin:4px 0;background:transparent;color:#fff;border:0;text-align:left;border-radius:9px}.nav button.active{background:#1b2a40;border-left:3px solid #ff8a00}.section{display:none}.section.active{display:block}.rules{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.row{display:flex;justify-content:space-between;padding:12px;background:#0d1726;border:1px solid #293b54;border-radius:10px}input,select,button{padding:10px;border-radius:9px;border:1px solid #344863;background:#0b1524;color:#fff}button{background:#ff8a00;color:#111;font-weight:700;cursor:pointer}.toolbar{display:flex;gap:8px;flex-wrap:wrap}.table{width:100%;border-collapse:collapse}.table th,.table td{padding:9px;border-bottom:1px solid #243349;text-align:left}.muted{color:#91a2b8;font-size:13px}.danger{color:#ff8d98}.ok{color:#72e0a1}.chart{height:160px;display:grid;grid-template-columns:repeat(14,1fr);gap:6px;align-items:end}.day{height:145px;display:flex;flex-direction:column;justify-content:end;align-items:center}.bar{width:70%;background:#ff8a00;border-radius:5px 5px 0 0;min-height:3px}@media(max-width:850px){.layout{grid-template-columns:1fr}.grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:600px){.wrap{padding:12px}.grid,.rules{grid-template-columns:1fr}}
-</style><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script></head><body><div class="wrap">
+</style><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script><script>
+window.enter = async function(){
+  const email = document.getElementById('email')?.value.trim() || '';
+  const password = document.getElementById('password')?.value || '';
+  const msg = document.getElementById('msg');
+  if (!email || !password) { if(msg) msg.textContent='Informe e-mail e senha.'; return; }
+  if(msg) msg.textContent='Entrando...';
+  try {
+    const r = await fetch('/api/auth/login',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email,password})
+    });
+    const d = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.detail || 'Falha no login.');
+    if(!d.access_token) throw new Error('Login não retornou um token de acesso.');
+    localStorage.setItem('sc_access_token',d.access_token);
+    localStorage.setItem('sc_user',JSON.stringify(d.user||{}));
+    if(msg) msg.innerHTML='<p class="ok">✓ Login realizado. Carregando painel...</p>';
+    location.reload();
+  } catch(e) {
+    if(msg) msg.innerHTML='<p class="danger">'+String(e.message||e)+'</p>';
+  }
+};
+</script></head><body><div class="wrap">
 <header><div><h1>🛡️ SentinelChat</h1><div class="muted">Proteção profissional da comunidade</div></div><div class="toolbar"><button onclick="refresh()">↻ Atualizar</button><button onclick="logout()">Sair</button></div></header>
 <div id="login" class="card auth-card"><h2>Entrar no SentinelChat</h2><p class="muted">Acesse sua conta para gerenciar seus grupos.</p><input id="email" type="email" placeholder="Seu e-mail" style="width:100%"><br><br><input id="password" type="password" placeholder="Sua senha" style="width:100%"><br><br><button onclick="enter()">Entrar</button> <button class="secondary" onclick="showSignup()">Criar conta</button><div class="auth-links"><button class="link" onclick="resetPassword()">Esqueci minha senha</button></div><div id="msg"></div></div>
 <div id="app" style="display:none"><div class="card"><div class="muted">Grupo protegido</div><select id="chat" onchange="changeChat()" style="width:100%"></select><div id="info" class="muted"></div></div>
@@ -383,7 +407,7 @@ const $=id=>document.getElementById(id);
 const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 const hdr=()=>({'Authorization':'Bearer '+token,'Content-Type':'application/json'});
 async function api(url,opt={}){const r=await fetch(url,{...opt,headers:{...hdr(),...(opt.headers||{})}});let d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.detail||'Erro no painel.');return d}
-async function enter(){const email=$('email').value.trim(),password=$('password').value;if(!email||!password){$('msg').textContent='Informe e-mail e senha.';return}$('msg').textContent='Entrando...';try{const d=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})}).then(async r=>{const x=await r.json();if(!r.ok)throw Error(x.detail||'Falha no login');return x});token=d.access_token;currentUser=d.user;localStorage.setItem('sc_access_token',token);localStorage.setItem('sc_user',JSON.stringify(currentUser));await loadChats()}catch(e){$('msg').innerHTML='<p class="danger">'+esc(e.message)+'</p>'}}
+async function enter(){const email=$('email').value.trim(),password=$('password').value;if(!email||!password){$('msg').textContent='Informe e-mail e senha.';return}$('msg').textContent='Entrando...';try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.detail||'Falha no login');if(!d.access_token)throw Error('Login não retornou um token de acesso.');token=d.access_token;currentUser=d.user||null;localStorage.setItem('sc_access_token',token);localStorage.setItem('sc_user',JSON.stringify(currentUser||{}));$('msg').innerHTML='<p class="ok">✓ Login realizado. Carregando painel...</p>';await loadChats()}catch(e){$('msg').innerHTML='<p class="danger">'+esc(e.message)+'</p>'}}
 function logout(){localStorage.removeItem('sc_access_token');localStorage.removeItem('sc_user');location.reload()}
 function tab(id,b){document.querySelectorAll('.section').forEach(x=>x.classList.remove('active'));$(id).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');if(id==='admin')loadAdmin()}
 function showSignup(){const name=prompt('Nome completo:');if(name===null)return;const email=prompt('E-mail:');if(!email)return;const password=prompt('Senha (mínimo 8 caracteres):');if(password===null)return;if(password.length<8){$('msg').textContent='A senha precisa ter pelo menos 8 caracteres.';return}$('msg').textContent='Criando conta...';fetch('/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({full_name:name,email,password})}).then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.detail||'Não foi possível criar a conta.');if(d.access_token){token=d.access_token;currentUser=d.user;localStorage.setItem('sc_access_token',token);localStorage.setItem('sc_user',JSON.stringify(currentUser));$('msg').textContent='Conta criada. Entrando...';await loadChats();return}$('msg').innerHTML='<p class="ok">✓ Conta criada. '+esc(d.message||'Confirme seu e-mail para entrar.')+'</p>'}).catch(e=>{$('msg').innerHTML='<p class="danger">'+esc(e.message)+'</p>'})}
