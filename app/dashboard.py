@@ -260,7 +260,7 @@ async def admin_chat_workspace(chat_id: str, payload: ChatAssignmentUpdate, auth
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
-    return HTMLResponse(HTML)
+    return HTMLResponse(HTML, headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0"})
 
 @router.get("/api/dashboard/chats")
 async def chats(authorization: str | None = Header(default=None)):
@@ -407,6 +407,8 @@ window.enter = async function(){
 </main></div></div></div>
 <script>
 let token=localStorage.getItem('sc_access_token')||'',cid='',currentUser=null,supaClient=null;
+document.addEventListener("submit",e=>{e.preventDefault();e.stopPropagation();return false},true);
+document.addEventListener("keydown",e=>{if(e.key==="Enter" && (e.target?.id==="email" || e.target?.id==="password")){e.preventDefault();e.stopPropagation();enter(e)}},true);
 const $=id=>document.getElementById(id);
 const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 const hdr=()=>({'Authorization':'Bearer '+token,'Content-Type':'application/json'});
