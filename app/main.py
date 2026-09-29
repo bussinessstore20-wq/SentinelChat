@@ -14,6 +14,7 @@ from telegram.ext import (
 
 from .config import settings
 from .database import get_supabase
+from .dashboard import router as dashboard_router
 from .moderation import (
     MemberProfile,
     ModerationRule,
@@ -1122,13 +1123,16 @@ async def lifespan(app: FastAPI):
 
 api = FastAPI(
     title="SentinelChat",
-    version="0.4.0",
+    version="0.5.0",
     description=(
         "Telegram community protection "
         "and moderation platform."
     ),
     lifespan=lifespan,
 )
+
+# Painel web de configuração protegido por DASHBOARD_TOKEN.
+api.include_router(dashboard_router)
 
 
 # ==================================================
@@ -1148,7 +1152,7 @@ async def root():
     return {
         "name": "SentinelChat",
         "status": "online",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "telegram_mode": settings.telegram_mode,
         "features": [
             "telegram",
