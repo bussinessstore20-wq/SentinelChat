@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # Mantida apenas como fallback temporário.
     supabase_service_role_key: str = ""
 
+    # Token privado para proteger o painel web.
+    # Nunca expor este valor no frontend, no GitHub ou no chat.
+    dashboard_token: str = ""
+
     app_env: str = "production"
 
     model_config = SettingsConfigDict(
