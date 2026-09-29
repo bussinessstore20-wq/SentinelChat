@@ -18,6 +18,8 @@ def current_user(authorization: str | None):
         if not user:
             raise ValueError("invalid session")
         return user
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(401, "Sessão expirada. Faça login novamente.")
 
@@ -64,15 +66,17 @@ async def auth_signup(payload: dict):
     full_name = str(payload.get("full_name") or "").strip()
     if not email or len(password) < 8:
         raise HTTPException(400, "Informe um e-mail e uma senha com pelo menos 8 caracteres.")
+    if not full_name:
+        raise HTTPException(400, "Informe seu nome completo.")
     try:
-        result = get_supabase().auth.sign_up({"email": email, "password": password, "options": {"data": {"full_name": full_name}}})
+        db = get_supabase()
+        existing_admins = db.table("profiles").select("id").eq("role", "admin").limit(1).execute().data or []
+        result = db.auth.sign_up({"email": email, "password": password, "options": {"data": {"full_name": full_name}}})
         user = getattr(result, "user", None)
         if not user:
             raise ValueError("signup failed")
-        db = get_supabase()
-        existing_admins = db.table("profiles").select("id").eq("role", "admin").limit(1).execute().data or []
         is_admin = (bool(settings.saas_admin_email.strip()) and email == settings.saas_admin_email.strip().lower()) or not existing_admins
-        profile = db.table("profiles").update({"full_name": full_name, "role": "admin" if is_admin else "customer"}).eq("id", str(user.id)).execute()
+        db.table("profiles").update({"full_name": full_name, "role": "admin" if is_admin else "customer", "status": "active"}).eq("id", str(user.id)).execute()
         if is_admin:
             legacy = db.table("workspaces").select("id,owner_id").is_("owner_id", "null").limit(1).execute().data or []
             if legacy:
@@ -139,14 +143,120 @@ async def admin_customers(authorization: str | None = Header(default=None)):
     require_admin(authorization)
     db = get_supabase()
     rows = db.table("profiles").select("id,full_name,role,status,created_at").order("created_at", desc=True).execute().data or []
-    return {"ok": True, "customers": rows}
+    workspaces = db.table("workspaces").select("id,name,owner_id").execute().data or []
+    subscriptions = db.table("subscriptions").select("workspace_id,plan,status,max_groups,max_users,current_period_end").execute().data or []
+    chats = db.table("telegram_chats").select("id,title,workspace_id,is_active").execute().data or []
+    ws_by_owner = {}
+    for ws in workspaces:
+        ws_by_owner.setdefault(ws.get("owner_id"), []).append(ws)
+    sub_by_ws = {x["workspace_id"]: x for x in subscriptions}
+    groups_by_ws = {}
+    for chat in chats:
+        if chat.get("is_active"):
+            groups_by_ws[chat.get("workspace_id")] = groups_by_ws.get(chat.get("workspace_id"), 0) + 1
+    customers = []
+    for row in rows:
+        item = {**row}
+        item["workspaces"] = [{
+            "id": ws["id"],
+            "name": ws["name"],
+            "groups": groups_by_ws.get(ws["id"], 0),
+            "subscription": sub_by_ws.get(ws["id"]),
+        } for ws in ws_by_owner.get(row["id"], [])]
+        customers.append(item)
+    return {"ok": True, "customers": customers}
 
 @router.get("/api/admin/workspaces")
 async def admin_workspaces(authorization: str | None = Header(default=None)):
     require_admin(authorization)
     db = get_supabase()
     rows = db.table("workspaces").select("id,name,owner_id,created_at").order("created_at", desc=True).execute().data or []
-    return {"ok": True, "workspaces": rows}
+    subscriptions = db.table("subscriptions").select("workspace_id,plan,status,max_groups,max_users,current_period_end").execute().data or []
+    chats = db.table("telegram_chats").select("id,title,telegram_chat_id,workspace_id,is_active").execute().data or []
+    sub_by_ws = {x["workspace_id"]: x for x in subscriptions}
+    result = []
+    for ws in rows:
+        result.append({**ws, "subscription": sub_by_ws.get(ws["id"]), "groups": [c for c in chats if c.get("workspace_id") == ws["id"]]})
+    return {"ok": True, "workspaces": result}
+
+
+class SubscriptionUpdate(BaseModel):
+    plan: str = Field(pattern="^(free|pro|business)$")
+    status: str = Field(pattern="^(active|past_due|canceled|suspended)$")
+    max_groups: int = Field(ge=0, le=10000)
+    max_users: int = Field(ge=1, le=100000)
+
+class CustomerStatusUpdate(BaseModel):
+    status: str = Field(pattern="^(active|suspended|inactive)$")
+
+class ChatAssignmentUpdate(BaseModel):
+    workspace_id: str
+
+PLAN_DEFAULTS = {
+    "free": {"max_groups": 1, "max_users": 100},
+    "pro": {"max_groups": 5, "max_users": 1000},
+    "business": {"max_groups": 50, "max_users": 10000},
+}
+
+@router.post("/api/admin/customers/{user_id}/status")
+async def admin_customer_status(user_id: str, payload: CustomerStatusUpdate, authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    db = get_supabase()
+    rows = db.table("profiles").select("id,role").eq("id", user_id).limit(1).execute().data or []
+    if not rows:
+        raise HTTPException(404, "Cliente não encontrado.")
+    if rows[0].get("role") == "admin" and payload.status != "active":
+        raise HTTPException(400, "Não é permitido suspender ou inativar um administrador por este painel.")
+    db.table("profiles").update({"status": payload.status}).eq("id", user_id).execute()
+    workspaces = db.table("workspaces").select("id").eq("owner_id", user_id).execute().data or []
+    for ws in workspaces:
+        sub_status = "suspended" if payload.status == "suspended" else ("canceled" if payload.status == "inactive" else "active")
+        db.table("subscriptions").update({"status": sub_status}).eq("workspace_id", ws["id"]).execute()
+    return {"ok": True, "status": payload.status}
+
+@router.put("/api/admin/workspaces/{workspace_id}/subscription")
+async def admin_workspace_subscription(workspace_id: str, payload: SubscriptionUpdate, authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    db = get_supabase()
+    ws = db.table("workspaces").select("id").eq("id", workspace_id).limit(1).execute().data or []
+    if not ws:
+        raise HTTPException(404, "Organização não encontrada.")
+    db.table("subscriptions").upsert({
+        "workspace_id": workspace_id,
+        "plan": payload.plan,
+        "status": payload.status,
+        "max_groups": payload.max_groups,
+        "max_users": payload.max_users,
+    }, on_conflict="workspace_id").execute()
+    return {"ok": True}
+
+@router.post("/api/admin/workspaces/{workspace_id}/plan-default")
+async def admin_workspace_plan_default(workspace_id: str, payload: dict, authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    plan = str(payload.get("plan") or "").lower()
+    if plan not in PLAN_DEFAULTS:
+        raise HTTPException(400, "Plano inválido.")
+    db = get_supabase()
+    db.table("subscriptions").upsert({
+        "workspace_id": workspace_id,
+        "plan": plan,
+        "status": "active",
+        **PLAN_DEFAULTS[plan],
+    }, on_conflict="workspace_id").execute()
+    return {"ok": True, "plan": plan, **PLAN_DEFAULTS[plan]}
+
+@router.put("/api/admin/chats/{chat_id}/workspace")
+async def admin_chat_workspace(chat_id: str, payload: ChatAssignmentUpdate, authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    db = get_supabase()
+    chat = db.table("telegram_chats").select("id").eq("id", chat_id).limit(1).execute().data or []
+    workspace = db.table("workspaces").select("id,name").eq("id", payload.workspace_id).limit(1).execute().data or []
+    if not chat:
+        raise HTTPException(404, "Grupo não encontrado.")
+    if not workspace:
+        raise HTTPException(404, "Organização de destino não encontrada.")
+    db.table("telegram_chats").update({"workspace_id": payload.workspace_id}).eq("id", chat_id).execute()
+    return {"ok": True, "workspace": workspace[0]}
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
@@ -250,7 +360,7 @@ body{margin:0;background:#08101d;color:#e8eef7;font-family:Arial,sans-serif}.wra
 <div id="app" style="display:none"><div class="card"><div class="muted">Grupo protegido</div><select id="chat" onchange="changeChat()" style="width:100%"></select><div id="info" class="muted"></div></div>
 <div class="layout"><nav class="card nav"><button class="active" onclick="tab('overview',this)">📊 Visão geral</button><button onclick="tab('members',this)">👥 Membros</button><button onclick="tab('events',this)">📋 Eventos</button><button onclick="tab('settings',this)">⚙️ Configurações</button><button id="adminNav" style="display:none" onclick="tab('admin',this)">👑 Administração</button></nav>
 <main>
-<section id="admin" class="section"><div class="card"><h2>Administração do SaaS</h2><p class="muted">Controle central de clientes, organizações e grupos.</p><div class="grid"><div class="stat">Clientes<div id="aCustomers" class="value">—</div></div><div class="stat">Ativos<div id="aActive" class="value">—</div></div><div class="stat">Suspensos<div id="aSuspended" class="value">—</div></div><div class="stat">Grupos<div id="aGroups" class="value">—</div></div></div></div><div class="card"><h2>Clientes</h2><div id="adminCustomers"></div></div><div class="card"><h2>Organizações</h2><div id="adminWorkspaces"></div></div></section><section id="overview" class="section active"><div class="grid"><div class="stat">Analisados<div id="s1" class="value">—</div></div><div class="stat">Violações<div id="s2" class="value">—</div></div><div class="stat">Restrições<div id="s3" class="value">—</div></div><div class="stat">Banimentos<div id="s4" class="value">—</div></div></div><div class="card"><h2>Resumo</h2><div id="summary"></div></div><div class="card"><h2>Atividade recente</h2><div id="recentActivity"></div></div><div class="card"><h2>Analytics — últimos 14 dias</h2><div id="chart" class="chart"></div></div></section>
+<section id="admin" class="section"><div class="card"><h2>Administração do SaaS</h2><p class="muted">Clientes, planos, limites e grupos em um único lugar.</p><div class="grid"><div class="stat">Clientes<div id="aCustomers" class="value">—</div></div><div class="stat">Ativos<div id="aActive" class="value">—</div></div><div class="stat">Suspensos<div id="aSuspended" class="value">—</div></div><div class="stat">Grupos<div id="aGroups" class="value">—</div></div></div></div><div class="card"><h2>Clientes</h2><div id="adminCustomers"></div></div><div class="card"><h2>Organizações e grupos</h2><div id="adminWorkspaces"></div></div></section><section id="overview" class="section active"><div class="grid"><div class="stat">Analisados<div id="s1" class="value">—</div></div><div class="stat">Violações<div id="s2" class="value">—</div></div><div class="stat">Restrições<div id="s3" class="value">—</div></div><div class="stat">Banimentos<div id="s4" class="value">—</div></div></div><div class="card"><h2>Resumo</h2><div id="summary"></div></div><div class="card"><h2>Atividade recente</h2><div id="recentActivity"></div></div><div class="card"><h2>Analytics — últimos 14 dias</h2><div id="chart" class="chart"></div></div></section>
 <section id="moderation" class="section"><div class="card"><h2>Modo de proteção</h2><div class="rules"><div><div class="muted">Ação</div><select id="action" style="width:100%"><option value="review">Revisão</option><option value="restrict">Restringir</option><option value="ban">Banir</option></select></div><label class="row">DRY-RUN <input id="dry" type="checkbox"></label></div></div><div class="card"><h2>Regras de entrada</h2><div class="rules"><label class="row">Foto <input id="photo" type="checkbox"></label><label class="row">Primeiro nome <input id="first" type="checkbox"></label><label class="row">Sobrenome <input id="last" type="checkbox"></label><label class="row">Username <input id="user" type="checkbox"></label><label class="row">Ignorar admins <input id="admins" type="checkbox"></label></div><br><button onclick="saveRules()">Salvar</button><div id="save"></div></div></section>
 <section id="members" class="section"><div class="card"><h2>Central de membros</h2><div class="toolbar"><input id="mq" placeholder="Buscar nome, username ou ID" oninput="loadMembers()" style="flex:1"><select id="ma" onchange="loadMembers()"><option value="all">Todas</option><option value="restrict">Restringidos</option><option value="ban">Banidos</option><option value="review">Revisão</option></select></div><div id="membersContent"></div></div></section>
 <section id="events" class="section"><div class="card"><h2>Central de eventos</h2><select id="et" onchange="loadEvents()"><option value="all">Todos</option><option value="member_violation">Violações</option><option value="moderation_error">Erros</option></select><div id="eventsContent"></div></div></section>
@@ -276,11 +386,14 @@ async function api(url,opt={}){const r=await fetch(url,{...opt,headers:{...hdr()
 async function enter(){const email=$('email').value.trim(),password=$('password').value;if(!email||!password){$('msg').textContent='Informe e-mail e senha.';return}$('msg').textContent='Entrando...';try{const d=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})}).then(async r=>{const x=await r.json();if(!r.ok)throw Error(x.detail||'Falha no login');return x});token=d.access_token;currentUser=d.user;localStorage.setItem('sc_access_token',token);localStorage.setItem('sc_user',JSON.stringify(currentUser));await loadChats()}catch(e){$('msg').innerHTML='<p class="danger">'+esc(e.message)+'</p>'}}
 function logout(){localStorage.removeItem('sc_access_token');localStorage.removeItem('sc_user');location.reload()}
 function tab(id,b){document.querySelectorAll('.section').forEach(x=>x.classList.remove('active'));$(id).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');if(id==='admin')loadAdmin()}
-function showSignup(){const name=prompt('Nome completo:');if(name===null)return;const email=prompt('E-mail:');if(!email)return;const password=prompt('Senha (mínimo 8 caracteres):');if(!password)return;fetch('/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({full_name:name,email,password})}).then(async r=>{const d=await r.json();$('msg').textContent=d.detail||d.message||'Conta criada. Verifique seu e-mail.'}).catch(()=>{$('msg').textContent='Não foi possível criar a conta.'})}
+function showSignup(){const name=prompt('Nome completo:');if(name===null)return;const email=prompt('E-mail:');if(!email)return;const password=prompt('Senha (mínimo 8 caracteres):');if(password===null)return;if(password.length<8){$('msg').textContent='A senha precisa ter pelo menos 8 caracteres.';return}$('msg').textContent='Criando conta...';fetch('/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({full_name:name,email,password})}).then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.detail||'Não foi possível criar a conta.');if(d.access_token){token=d.access_token;currentUser=d.user;localStorage.setItem('sc_access_token',token);localStorage.setItem('sc_user',JSON.stringify(currentUser));$('msg').textContent='Conta criada. Entrando...';await loadChats();return}$('msg').innerHTML='<p class="ok">✓ Conta criada. '+esc(d.message||'Confirme seu e-mail para entrar.')+'</p>'}).catch(e=>{$('msg').innerHTML='<p class="danger">'+esc(e.message)+'</p>'})}
 async function resetPassword(){const email=$('email').value.trim()||prompt('Informe seu e-mail:');if(!email)return;try{const d=await fetch('/api/auth/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})}).then(r=>r.json());$('msg').textContent=d.message||'Verifique seu e-mail.'}catch(e){$('msg').textContent='Solicitação enviada.'}}
 async function changePassword(){const password=$('newPassword').value;if(password.length<8){$('passwordStatus').textContent='Use pelo menos 8 caracteres.';return}try{await api('/api/auth/password',{method:'POST',body:JSON.stringify({password})});$('passwordStatus').textContent='Senha alterada com sucesso.';$('newPassword').value=''}catch(e){$('passwordStatus').textContent=e.message}}
 async function bootstrapAuth(){try{const cfg=await fetch('/api/auth/public-config').then(r=>r.json());if(cfg.url&&cfg.publishable_key&&window.supabase){supaClient=window.supabase.createClient(cfg.url,cfg.publishable_key);const {data}=await supaClient.auth.getSession();if(data.session&&!token){token=data.session.access_token;localStorage.setItem('sc_access_token',token);currentUser=JSON.parse(localStorage.getItem('sc_user')||'null')}}}catch(e){}if(token)loadChats()}
-async function loadAdmin(){try{const [s,c,w]=await Promise.all([api('/api/admin/summary'),api('/api/admin/customers'),api('/api/admin/workspaces')]);$('aCustomers').textContent=s.stats.customers;$('aActive').textContent=s.stats.active;$('aSuspended').textContent=s.stats.suspended;$('aGroups').textContent=s.stats.groups;$('adminCustomers').innerHTML='<table class="table"><tr><th>Cliente</th><th>Status</th><th>Perfil</th><th>Entrada</th></tr>'+c.customers.map(x=>'<tr><td>'+esc(x.full_name||'—')+'<br><span class="muted">'+esc(x.id)+'</span></td><td>'+esc(x.status)+'</td><td>'+esc(x.role)+'</td><td>'+esc(dt(x.created_at))+'</td></tr>').join('')+'</table>';$('adminWorkspaces').innerHTML='<table class="table"><tr><th>Organização</th><th>Responsável</th><th>Criada</th></tr>'+w.workspaces.map(x=>'<tr><td>'+esc(x.name)+'</td><td>'+esc(x.owner_id||'—')+'</td><td>'+esc(dt(x.created_at))+'</td></tr>').join('')+'</table>'}catch(e){$('adminCustomers').innerHTML='<p class="danger">'+esc(e.message)+'</p>'}}
+async function loadAdmin(){try{const [summary,customers,workspaces]=await Promise.all([api('/api/admin/summary'),api('/api/admin/customers'),api('/api/admin/workspaces')]);$('aCustomers').textContent=summary.stats.customers;$('aActive').textContent=summary.stats.active;$('aSuspended').textContent=summary.stats.suspended;$('aGroups').textContent=summary.stats.groups;$('adminCustomers').innerHTML=customers.customers.map(x=>{const ws=(x.workspaces||[])[0],sub=ws?.subscription||{};return '<div class="card"><div class="row"><span><b>'+esc(x.full_name||'Sem nome')+'</b><br><span class="muted">'+esc(x.id)+'</span></span><span>'+esc(x.status)+'</span></div><div class="toolbar" style="margin-top:10px"><button onclick="setCustomerStatus(\''+x.id+'\',\''+(x.status==='active'?'suspended':'active')+'\')">'+(x.status==='active'?'Suspender':'Ativar')+'</button>'+(ws?'<select id="plan_'+ws.id+'"><option value="free" '+(sub.plan==='free'?'selected':'')+'>Free</option><option value="pro" '+(sub.plan==='pro'?'selected':'')+'>Pro</option><option value="business" '+(sub.plan==='business'?'selected':'')+'>Business</option></select><input id="groups_'+ws.id+'" type="number" min="0" value="'+esc(sub.max_groups??1)+'" title="Limite de grupos" style="width:90px"><input id="users_'+ws.id+'" type="number" min="1" value="'+esc(sub.max_users??100)+'" title="Limite de usuários" style="width:110px"><button onclick="saveSubscription(\''+ws.id+'\')">Salvar plano/limites</button>':'<span class="muted">Sem organização vinculada</span>')+'</div></div>'}).join('')||'<p class="muted">Nenhum cliente.</p>';$('adminWorkspaces').innerHTML='<table class="table"><tr><th>Grupo</th><th>Organização</th><th>Plano</th><th>Status</th><th>Ação</th></tr>'+workspaces.workspaces.flatMap(w=>(w.groups||[]).map(c=>'<tr><td>'+esc(c.title||c.telegram_chat_id)+'</td><td><select id="ws_'+c.id+'">'+workspaces.workspaces.map(dest=>'<option value="'+dest.id+'" '+(dest.id===c.workspace_id?'selected':'')+'>'+esc(dest.name)+'</option>').join('')+'</select></td><td>'+esc(w.subscription?.plan||'free')+'</td><td>'+esc(w.subscription?.status||'—')+'</td><td><button onclick="assignChat(\''+c.id+'\')">Vincular</button></td></tr>')).join('')+'</table>'}catch(e){$('adminCustomers').innerHTML='<p class="danger">'+esc(e.message)+'</p>'}}
+async function setCustomerStatus(id,status){if(!confirm(status==='suspended'?'Suspender este cliente?':'Reativar este cliente?'))return;try{await api('/api/admin/customers/'+id+'/status',{method:'POST',body:JSON.stringify({status})});await loadAdmin()}catch(e){alert(e.message)}}
+async function saveSubscription(workspaceId){const plan=$('plan_'+workspaceId).value;const defaults={free:[1,100],pro:[5,1000],business:[50,10000]};const [dg,du]=defaults[plan];const groups=Math.max(0,Number($('groups_'+workspaceId).value||dg));const users=Math.max(1,Number($('users_'+workspaceId).value||du));try{await api('/api/admin/workspaces/'+workspaceId+'/subscription',{method:'PUT',body:JSON.stringify({plan,status:'active',max_groups:groups,max_users:users})});alert('Plano e limites salvos.');await loadAdmin()}catch(e){alert(e.message)}}
+async function assignChat(chatId){const workspaceId=$('ws_'+chatId).value;try{await api('/api/admin/chats/'+chatId+'/workspace',{method:'PUT',body:JSON.stringify({workspace_id:workspaceId})});alert('Grupo vinculado com sucesso.');await loadAdmin();await loadChats()}catch(e){alert(e.message)}}
 async function loadChats(){try{const d=await api('/api/dashboard/chats');$('login').style.display='none';$('app').style.display='block';currentUser=currentUser||JSON.parse(localStorage.getItem('sc_user')||'null');if(currentUser){$('accountInfo').textContent=(currentUser.email||'')+' · '+(currentUser.role||'customer');if(currentUser.role==='admin')$('adminNav').style.display='block'}const s=$('chat');s.innerHTML='';(d.chats||[]).forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.title+' · '+c.telegram_chat_id;s.appendChild(o)});if(!d.chats?.length)return;cid=cid&&d.chats.some(c=>c.id===cid)?cid:d.chats[0].id;s.value=cid;await refresh()}catch(e){$('msg').innerHTML='<p class="danger">'+esc(e.message)+'</p>'}}
 async function refresh(){if(!cid)return;const b=document.querySelector('.toolbar button');if(b){b.disabled=true;b.textContent='↻ Atualizando...'}try{await Promise.all([loadRules(),loadOverview(),loadMembers(),loadEvents()]);const d=await api('/api/dashboard/chats'),c=d.chats.find(x=>x.id===cid);$('info').textContent=c?c.title+' · '+c.analyses+' análises · '+c.events+' eventos · '+(c.rules?.dry_run?'DRY-RUN':'Modo '+(c.rules?.action||'review')):''}catch(e){$('info').textContent='Erro ao atualizar: '+e.message;console.error(e)}finally{if(b){b.disabled=false;b.textContent='↻ Atualizar'}}}
 function changeChat(){cid=$('chat').value;refresh()}
