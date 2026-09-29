@@ -204,6 +204,76 @@ async def dashboard_update_rules(
     }
 
 
+
+@router.get("/api/dashboard/chats/{chat_id}/overview")
+async def dashboard_overview(
+    chat_id: str,
+    authorization: str | None = Header(default=None),
+):
+    require_dashboard_token(authorization)
+    db = get_supabase()
+
+    scans = db.table("member_scans").select("id,violations,action_taken,scanned_at").eq("chat_id", chat_id).execute()
+    events = db.table("moderation_events").select("id,event_type,created_at").eq("chat_id", chat_id).execute()
+    rules = db.table("moderation_rules").select("dry_run").eq("chat_id", chat_id).limit(1).execute()
+
+    scan_rows = scans.data or []
+    event_rows = events.data or []
+    violations = sum(1 for row in scan_rows if row.get("violations"))
+    restricts = sum(1 for row in scan_rows if row.get("action_taken") == "restrict")
+    bans = sum(1 for row in scan_rows if row.get("action_taken") == "ban")
+    timestamps = [x.get("created_at") for x in event_rows if x.get("created_at")]
+    last_event = max(timestamps) if timestamps else None
+
+    return {
+        "ok": True,
+        "stats": {
+            "scans": len(scan_rows),
+            "violations": violations,
+            "restricts": restricts,
+            "bans": bans,
+            "dry_run": bool(rules.data[0]["dry_run"]) if rules.data else True,
+            "last_event": last_event,
+        },
+    }
+
+
+@router.get("/api/dashboard/chats/{chat_id}/members")
+async def dashboard_members(
+    chat_id: str,
+    authorization: str | None = Header(default=None),
+):
+    require_dashboard_token(authorization)
+    db = get_supabase()
+    result = (
+        db.table("member_scans")
+        .select("telegram_user_id,username,first_name,last_name,violations,action_taken,scanned_at")
+        .eq("chat_id", chat_id)
+        .order("scanned_at", desc=True)
+        .limit(50)
+        .execute()
+    )
+    return {"ok": True, "members": result.data or []}
+
+
+@router.get("/api/dashboard/chats/{chat_id}/events")
+async def dashboard_events(
+    chat_id: str,
+    authorization: str | None = Header(default=None),
+):
+    require_dashboard_token(authorization)
+    db = get_supabase()
+    result = (
+        db.table("moderation_events")
+        .select("id,telegram_user_id,event_type,details,created_at")
+        .eq("chat_id", chat_id)
+        .order("created_at", desc=True)
+        .limit(50)
+        .execute()
+    )
+    return {"ok": True, "events": result.data or []}
+
+
 DASHBOARD_HTML = r"""
 <!doctype html>
 <html lang="pt-BR">
