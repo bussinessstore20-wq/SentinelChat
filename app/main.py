@@ -766,16 +766,9 @@ async def lifespan(app: FastAPI):
 
     try:
 
-        # Remove webhook anterior
-        await telegram_app.bot.delete_webhook(
-            drop_pending_updates=True
-        )
-
-        logger.info(
-            "Webhook anterior removido."
-        )
-
-        # Cria webhook novo
+        # Registrar o webhook diretamente.
+        # Não apagar o webhook anterior durante o startup.
+        # Isso evita uma janela sem webhook em reinicializações.
         await telegram_app.bot.set_webhook(
             url=full_webhook_url,
             allowed_updates=Update.ALL_TYPES,
@@ -824,13 +817,19 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # IMPORTANTE:
+    # Não remover o webhook durante shutdown/restart.
+    # O Render pode reiniciar o processo e o Telegram deve
+    # continuar apontando para este endpoint.
     try:
 
-        await telegram_app.bot.delete_webhook()
-
-    finally:
+        logger.info(
+            "Encerrando SentinelChat sem remover o webhook."
+        )
 
         await telegram_app.stop()
+
+    finally:
 
         await telegram_app.shutdown()
 
