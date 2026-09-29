@@ -103,7 +103,7 @@ body{margin:0;background:#08101d;color:#e8eef7;font-family:Arial,sans-serif}.wra
 <header><div><h1>🛡️ SentinelChat</h1><div class="muted">Proteção profissional da comunidade</div></div><div class="toolbar"><button onclick="refresh()">↻ Atualizar</button><button onclick="logout()">Sair</button></div></header>
 <div id="login" class="card"><h2>Acesso</h2><input id="token" type="password" placeholder="DASHBOARD_TOKEN" style="width:100%"><br><br><button onclick="enter()">Entrar</button><div id="msg"></div></div>
 <div id="app" style="display:none"><div class="card"><div class="muted">Grupo protegido</div><select id="chat" onchange="changeChat()" style="width:100%"></select><div id="info" class="muted"></div></div>
-<div class="layout"><nav class="card nav"><button class="active" onclick="tab('overview',this)">📊 Visão geral</button><button onclick="tab('moderation',this)">🛡️ Moderação</button><button onclick="tab('members',this)">👥 Membros</button><button onclick="tab('events',this)">📋 Eventos</button><button onclick="tab('settings',this)">⚙️ Configurações</button></nav>
+<div class="layout"><nav class="card nav"><button class="active" onclick="tab('overview',this)">📊 Visão geral</button><button onclick="tab('members',this)">👥 Membros</button><button onclick="tab('events',this)">📋 Eventos</button><button onclick="tab('settings',this)">⚙️ Configurações</button></nav>
 <main>
 <section id="overview" class="section active"><div class="grid"><div class="stat">Analisados<div id="s1" class="value">—</div></div><div class="stat">Violações<div id="s2" class="value">—</div></div><div class="stat">Restrições<div id="s3" class="value">—</div></div><div class="stat">Banimentos<div id="s4" class="value">—</div></div></div><div class="card"><h2>Resumo</h2><div id="summary"></div></div><div class="card"><h2>Atividade recente</h2><div id="recentActivity"></div></div><div class="card"><h2>Analytics — últimos 14 dias</h2><div id="chart" class="chart"></div></div></section>
 <section id="moderation" class="section"><div class="card"><h2>Modo de proteção</h2><div class="rules"><div><div class="muted">Ação</div><select id="action" style="width:100%"><option value="review">Revisão</option><option value="restrict">Restringir</option><option value="ban">Banir</option></select></div><label class="row">DRY-RUN <input id="dry" type="checkbox"></label></div></div><div class="card"><h2>Regras de entrada</h2><div class="rules"><label class="row">Foto <input id="photo" type="checkbox"></label><label class="row">Primeiro nome <input id="first" type="checkbox"></label><label class="row">Sobrenome <input id="last" type="checkbox"></label><label class="row">Username <input id="user" type="checkbox"></label><label class="row">Ignorar admins <input id="admins" type="checkbox"></label></div><br><button onclick="saveRules()">Salvar</button><div id="save"></div></div></section>
@@ -120,11 +120,7 @@ body{margin:0;background:#08101d;color:#e8eef7;font-family:Arial,sans-serif}.wra
 <label>DRY-RUN <input id="cfg_dry" type="checkbox"></label></div>
 <label>Modo de moderação <select id="cfg_action"><option value="review">Revisão</option><option value="restrict">Restrição</option><option value="ban">Banimento</option></select></label>
 <button onclick="saveConfig()">Salvar configurações</button><div id="cfg_status" class="muted"></div></div>
-<div class="card"><h2>Segurança e conexão</h2>
-<div class="row"><span>Dashboard Token</span><b>Protegido no servidor</b></div>
-<div class="row"><span>Supabase RLS</span><b>Ativo</b></div>
-<div class="row"><span>Chaves Supabase</span><b>Não expostas ao navegador</b></div>
-<div class="row"><span>Backend</span><b>Conectado</b></div></div></section>
+</section>
 </main></div></div></div>
 <script>
 let token=localStorage.getItem('sc_token')||'',cid='';const $=id=>document.getElementById(id);const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));const hdr=()=>({'Authorization':'Bearer '+token,'Content-Type':'application/json'});
