@@ -27,6 +27,10 @@ class Settings(BaseSettings):
 
     app_env: str = "production"
 
+    # SaaS authentication/admin settings.
+    saas_admin_email: str = ""
+    dashboard_url: str = "https://sentinelchat-jeyi.onrender.com/dashboard"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
