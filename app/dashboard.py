@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+import httpx
 
 from .config import settings
 from .database import get_supabase
@@ -86,6 +87,25 @@ async def members(chat_id: str, authorization: str | None = Header(default=None)
         rows = [r for r in rows if r.get("action_taken") == action]
     return {"ok": True, "members": rows}
 
+@router.post("/api/dashboard/chats/{chat_id}/members/{telegram_user_id}/ban")
+async def ban_member(chat_id: str, telegram_user_id: int, authorization: str | None = Header(default=None)):
+    check_token(authorization)
+    db = get_supabase()
+    chat_rows = db.table("telegram_chats").select("telegram_chat_id").eq("id", chat_id).limit(1).execute().data or []
+    if not chat_rows:
+        raise HTTPException(404, "Grupo não encontrado.")
+    telegram_chat_id = chat_rows[0]["telegram_chat_id"]
+    if not settings.telegram_bot_token.strip():
+        raise HTTPException(503, "Token do Telegram não configurado.")
+    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/banChatMember"
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(url, json={"chat_id": telegram_chat_id, "user_id": telegram_user_id})
+    data = response.json()
+    if not response.is_success or not data.get("ok"):
+        raise HTTPException(400, data.get("description", "Telegram recusou o banimento."))
+    db.table("moderation_events").insert({"chat_id": chat_id, "telegram_user_id": telegram_user_id, "event_type": "manual_ban", "details": {"source": "dashboard"}}).execute()
+    return {"ok": True, "message": "Usuário banido com sucesso."}
+
 @router.get("/api/dashboard/chats/{chat_id}/events")
 async def events(chat_id: str, authorization: str | None = Header(default=None), event_type: str = Query(default="all")):
     check_token(authorization)
@@ -134,7 +154,8 @@ async function loadRules(){const d=await api('/api/dashboard/chats/'+cid+'/rules
 async function saveRules(){const b={require_photo:$('photo').checked,require_first_name:$('first').checked,require_last_name:$('last').checked,require_username:$('user').checked,ignore_admins:$('admins').checked,action:$('action').value,dry_run:$('dry').checked};$('save').textContent='Salvando...';try{await api('/api/dashboard/chats/'+cid+'/rules',{method:'PUT',body:JSON.stringify(b)});$('save').innerHTML='<span class="ok">✓ Salvo.</span>';await loadRules()}catch(e){$('save').innerHTML='<span class="danger">'+esc(e.message)+'</span>'}}
 async function loadOverview(){const d=await api('/api/dashboard/chats/'+cid+'/overview');$('s1').textContent=d.stats.scans;$('s2').textContent=d.stats.violations;$('s3').textContent=d.stats.restricts;$('s4').textContent=d.stats.bans;$('summary').innerHTML='<p>'+(d.stats.dry_run?'🧪 DRY-RUN ativo':'🛡️ Moderação real ativa')+'</p><p class="muted">Último evento: '+esc(dt(d.stats.last_event)||'Nenhum')+'</p>';$('recentActivity').innerHTML=(d.recent_events||[]).length?(d.recent_events||[]).slice(0,6).map(x=>'<div class="row"><span><b>'+esc(x.event_type)+'</b><br><span class="muted">Usuário: '+esc(x.telegram_user_id||'—')+'</span></span><span class="muted">'+esc(dt(x.created_at))+'</span></div>').join(''):'<p class="muted">Nenhuma atividade recente.</p>';const a=d.daily||[],m=Math.max(1,...a.map(x=>x.scans));$('chart').innerHTML=a.length?a.map(x=>'<div class="day"><div class="bar" style="height:'+Math.max(4,Math.round(x.scans/m*125))+'px"></div><span class="small">'+x.scans+'</span><span class="small">'+x.date.slice(5)+'</span></div>').join(''):'<span class="muted">Sem dados.</span>'}
 function dt(x){return x?new Date(x).toLocaleString('pt-BR'):'—'}
-async function loadMembers(){const q=encodeURIComponent($('mq')?.value||''),a=encodeURIComponent($('ma')?.value||'all'),d=await api('/api/dashboard/chats/'+cid+'/members?q='+q+'&action='+a);if(!d.members.length){$('membersContent').innerHTML='<p class="muted">Nenhum resultado.</p>';return}$('membersContent').innerHTML='<table class="table"><tr><th>Usuário</th><th>Username</th><th>Violações</th><th>Ação</th><th>Data</th></tr>'+d.members.map(x=>'<tr><td>'+esc([x.first_name,x.last_name].filter(Boolean).join(' ')||'Sem nome')+'<br>'+x.telegram_user_id+'</td><td>'+esc(x.username?'@'+x.username:'—')+'</td><td>'+esc((x.violations||[]).join(', ')||'Nenhuma')+'</td><td>'+esc(x.action_taken||'OK')+'</td><td>'+esc(dt(x.scanned_at))+'</td></tr>').join('')+'</table>'}
+async function banMember(uid){if(!confirm('Banir este usuário do grupo?'))return;try{await api('/api/dashboard/chats/'+cid+'/members/'+uid+'/ban',{method:'POST'});alert('Usuário banido com sucesso.');await loadMembers();await loadOverview()}catch(e){alert('Não foi possível banir: '+e.message)}}
+async function loadMembers(){const q=encodeURIComponent($('mq')?.value||''),a=encodeURIComponent($('ma')?.value||'all'),d=await api('/api/dashboard/chats/'+cid+'/members?q='+q+'&action='+a);if(!d.members.length){$('membersContent').innerHTML='<p class="muted">Nenhum resultado.</p>';return}$('membersContent').innerHTML='<table class="table"><tr><th>Usuário</th><th>Username</th><th>Violações</th><th>Ação</th><th>Data</th></tr>'+d.members.map(x=>'<tr><td>'+esc([x.first_name,x.last_name].filter(Boolean).join(' ')||'Sem nome')+'<br>'+x.telegram_user_id+'</td><td>'+esc(x.username?'@'+x.username:'—')+'</td><td>'+esc((x.violations||[]).join(', ')||'Nenhuma')+'</td><td>'+esc(x.action_taken||'OK')+'<br><button class="dangerBtn" onclick="banMember('+x.telegram_user_id+')">Banir</button></td><td>'+esc(dt(x.scanned_at))+'</td></tr>').join('')+'</table>'}
 async function loadEvents(){const t=encodeURIComponent($('et')?.value||'all'),d=await api('/api/dashboard/chats/'+cid+'/events?event_type='+t);if(!d.events.length){$('eventsContent').innerHTML='<p class="muted">Nenhum evento.</p>';return}$('eventsContent').innerHTML=d.events.map(x=>'<div class="card"><b>'+esc(x.event_type)+'</b><div class="small">Usuário: '+esc(x.telegram_user_id||'—')+' · '+esc(dt(x.created_at))+'</div><div>'+esc(JSON.stringify(x.details||{}))+'</div></div>').join('')}
 if(token){$('token').value=token;loadChats()}
 </script></body></html>"""
