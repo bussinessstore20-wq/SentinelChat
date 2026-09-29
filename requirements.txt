@@ -3,3 +3,4 @@ uvicorn[standard]
 python-telegram-bot>=22,<23
 supabase==2.23.0
 pydantic-settings
+httpx
