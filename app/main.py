@@ -363,6 +363,178 @@ async def start(
     )
 
 
+
+# ==================================================
+# CONTROLE DE MODO DE MODERAÇÃO
+# ==================================================
+
+async def is_group_admin(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> bool:
+    """Verifica se quem executou o comando é administrador do grupo."""
+
+    if not update.effective_user or not update.effective_chat:
+        return False
+
+    if update.effective_chat.type not in ("group", "supergroup"):
+        return False
+
+    try:
+        member = await context.bot.get_chat_member(
+            update.effective_chat.id,
+            update.effective_user.id,
+        )
+
+        return member.status in (
+            "administrator",
+            "creator",
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "Não foi possível validar administrador: %s",
+            redact_error(exc),
+        )
+        return False
+
+
+async def set_moderation_mode(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    mode: str,
+):
+    """
+    Altera o modo de moderação somente para administradores.
+
+    Modos:
+    - dryrun: apenas detecta e notifica.
+    - restrict: restringe membros que violarem as regras.
+    - ban: bane membros que violarem as regras.
+    """
+
+    if not update.message or not update.effective_chat:
+        return
+
+    chat = update.effective_chat
+
+    if chat.type not in ("group", "supergroup"):
+        await update.message.reply_text(
+            "⚠️ Este comando precisa ser executado dentro do grupo."
+        )
+        return
+
+    if not await is_group_admin(update, context):
+        await update.message.reply_text(
+            "⛔ Apenas administradores do grupo podem alterar o modo."
+        )
+        return
+
+    try:
+        chat_id, _ = ensure_chat_registered(chat)
+        db = get_supabase()
+
+        if mode == "dryrun":
+            action = "review"
+            dry_run = True
+            label = "DRY-RUN"
+            explanation = (
+                "Nenhuma punição será aplicada. "
+                "O SentinelChat apenas detectará e notificará."
+            )
+
+        elif mode == "restrict":
+            action = "restrict"
+            dry_run = False
+            label = "RESTRIÇÃO"
+            explanation = (
+                "Membros que violarem as regras serão restringidos."
+            )
+
+        elif mode == "ban":
+            action = "ban"
+            dry_run = False
+            label = "BAN"
+            explanation = (
+                "Membros que violarem as regras serão banidos."
+            )
+
+        else:
+            await update.message.reply_text(
+                "⚠️ Modo inválido."
+            )
+            return
+
+        (
+            db.table("moderation_rules")
+            .update(
+                {
+                    "action": action,
+                    "dry_run": dry_run,
+                }
+            )
+            .eq("chat_id", chat_id)
+            .execute()
+        )
+
+        await update.message.reply_text(
+            "🛡️ SentinelChat — modo atualizado\n\n"
+            f"🔎 Modo: {label}\n"
+            f"📋 Ação: {action}\n\n"
+            f"ℹ️ {explanation}"
+        )
+
+        logger.info(
+            "Modo de moderação alterado no grupo %s para %s",
+            chat.id,
+            label,
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "Erro alterando modo de moderação"
+        )
+
+        await update.message.reply_text(
+            "⚠️ Não foi possível alterar o modo de moderação.\n\n"
+            f"🔎 Diagnóstico: {redact_error(exc)}"
+        )
+
+
+async def mode_dryrun(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    await set_moderation_mode(
+        update,
+        context,
+        "dryrun",
+    )
+
+
+async def mode_restrict(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    await set_moderation_mode(
+        update,
+        context,
+        "restrict",
+    )
+
+
+async def mode_ban(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    await set_moderation_mode(
+        update,
+        context,
+        "ban",
+    )
+
+
+
 # ==================================================
 # /STATUS
 # ==================================================
@@ -748,6 +920,28 @@ telegram_app.add_handler(
     )
 )
 
+
+telegram_app.add_handler(
+    CommandHandler(
+        "modo_dryrun",
+        mode_dryrun,
+    )
+)
+
+telegram_app.add_handler(
+    CommandHandler(
+        "modo_restrict",
+        mode_restrict,
+    )
+)
+
+telegram_app.add_handler(
+    CommandHandler(
+        "modo_ban",
+        mode_ban,
+    )
+)
+
 telegram_app.add_handler(
     MessageHandler(
         filters.StatusUpdate.NEW_CHAT_MEMBERS,
@@ -928,7 +1122,7 @@ async def lifespan(app: FastAPI):
 
 api = FastAPI(
     title="SentinelChat",
-    version="0.3.4",
+    version="0.4.0",
     description=(
         "Telegram community protection "
         "and moderation platform."
@@ -954,7 +1148,7 @@ async def root():
     return {
         "name": "SentinelChat",
         "status": "online",
-        "version": "0.3.4",
+        "version": "0.4.0",
         "telegram_mode": settings.telegram_mode,
         "features": [
             "telegram",
