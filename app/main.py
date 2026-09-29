@@ -72,6 +72,64 @@ def redact_error(exc):
 
 
 # ==================================================
+# NOTIFICAÇÕES PRIVADAS
+# ==================================================
+
+async def notify_group_admins(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat,
+    message: str,
+):
+    """
+    Envia notificações de moderação em mensagem privada
+    para os administradores do grupo.
+
+    O SentinelChat não publica mais os alertas de moderação
+    dentro do grupo. O administrador precisa ter iniciado
+    o bot em conversa privada pelo menos uma vez para que
+    o Telegram permita o envio da mensagem.
+    """
+
+    try:
+        administrators = await context.bot.get_chat_administrators(
+            chat.id
+        )
+    except Exception as exc:
+        logger.warning(
+            "Não foi possível obter os administradores do grupo %s: %s",
+            chat.id,
+            redact_error(exc),
+        )
+        return
+
+    for administrator in administrators:
+        admin_user = administrator.user
+
+        try:
+            await context.bot.send_message(
+                chat_id=admin_user.id,
+                text=message,
+            )
+
+            logger.info(
+                "Notificação privada enviada para admin %s do grupo %s",
+                admin_user.id,
+                chat.id,
+            )
+
+        except Exception as exc:
+            # O Telegram impede o bot de iniciar uma conversa
+            # privada com um usuário que nunca abriu o bot.
+            logger.warning(
+                "Não foi possível enviar notificação privada "
+                "para admin %s do grupo %s: %s",
+                admin_user.id,
+                chat.id,
+                redact_error(exc),
+            )
+
+
+# ==================================================
 # SUPABASE
 # ==================================================
 
@@ -565,6 +623,26 @@ async def handle_new_members(
                 ) from exc
 
             # ------------------------------------------
+            # NOTIFICAÇÃO DE APROVAÇÃO
+            # ------------------------------------------
+
+            if not violations:
+                await notify_group_admins(
+                    context,
+                    chat,
+                    (
+                        "🟢 SentinelChat — análise concluída\n\n"
+                        f"👤 Usuário: {user.full_name}\n"
+                        f"🆔 ID: {user.id}\n\n"
+                        "✅ Foto de perfil\n"
+                        "✅ Primeiro nome\n"
+                        "✅ Sobrenome\n"
+                        "✅ Username\n\n"
+                        "🛡️ Nenhuma violação encontrada."
+                    ),
+                )
+
+            # ------------------------------------------
             # EVENTO
             # ------------------------------------------
 
@@ -596,18 +674,28 @@ async def handle_new_members(
                         + redact_error(exc)
                     ) from exc
 
-                if rules.dry_run:
+                notification = (
+                    "🔎 SentinelChat — possível violação\n\n"
+                    f"👤 Usuário: {user.full_name}\n"
+                    f"🆔 ID: {user.id}\n"
+                    f"⚠️ Motivos: {', '.join(violations)}\n\n"
+                )
 
-                    await update.message.reply_text(
-                        "🔎 SentinelChat detectou "
-                        "uma possível violação.\n\n"
-                        f"👤 Usuário: {user.full_name}\n"
-                        f"🆔 ID: {user.id}\n"
-                        f"⚠️ Motivos: "
-                        f"{', '.join(violations)}\n\n"
+                if rules.dry_run:
+                    notification += (
                         "🧪 DRY-RUN ativo.\n"
                         "Nenhuma ação foi aplicada."
                     )
+                else:
+                    notification += (
+                        f"🛡️ Ação aplicada: {action_taken or 'review'}."
+                    )
+
+                await notify_group_admins(
+                    context,
+                    chat,
+                    notification,
+                )
 
     except Exception as exc:
 
@@ -840,7 +928,7 @@ async def lifespan(app: FastAPI):
 
 api = FastAPI(
     title="SentinelChat",
-    version="0.3.3",
+    version="0.3.4",
     description=(
         "Telegram community protection "
         "and moderation platform."
@@ -866,7 +954,7 @@ async def root():
     return {
         "name": "SentinelChat",
         "status": "online",
-        "version": "0.3.3",
+        "version": "0.3.4",
         "telegram_mode": settings.telegram_mode,
         "features": [
             "telegram",
