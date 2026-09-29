@@ -15,6 +15,7 @@ from telegram.ext import (
 from .config import settings
 from .database import get_supabase
 from .dashboard import router as dashboard_router
+from .client import router as client_router
 from .moderation import (
     MemberProfile,
     ModerationRule,
@@ -1133,6 +1134,7 @@ api = FastAPI(
 
 # Painel web de configuração protegido por DASHBOARD_TOKEN.
 api.include_router(dashboard_router)
+api.include_router(client_router)
 
 
 # ==================================================
