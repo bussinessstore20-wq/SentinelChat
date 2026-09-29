@@ -8,12 +8,101 @@ from .database import get_supabase
 
 router = APIRouter()
 
+def current_user(authorization: str | None):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Sessão não autenticada.")
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_response = get_supabase().auth.get_user(access_token)
+        user = getattr(user_response, "user", None)
+        if not user:
+            raise ValueError("invalid session")
+        return user
+    except Exception:
+        raise HTTPException(401, "Sessão expirada. Faça login novamente.")
+
 def check_token(authorization: str | None):
-    token = settings.dashboard_token.strip()
-    if not token:
-        raise HTTPException(503, "DASHBOARD_TOKEN não configurado.")
-    if authorization != f"Bearer {token}":
-        raise HTTPException(401, "Token do dashboard inválido.")
+    # Compatibilidade temporária: endpoints antigos passam a exigir Supabase Auth.
+    return current_user(authorization)
+
+def require_admin(authorization: str | None):
+    user = current_user(authorization)
+    rows = get_supabase().table("profiles").select("role,status").eq("id", str(user.id)).limit(1).execute().data or []
+    if not rows or rows[0].get("role") != "admin" or rows[0].get("status") != "active":
+        raise HTTPException(403, "Acesso restrito ao administrador.")
+    return user
+
+@router.post("/api/auth/login")
+async def auth_login(payload: dict):
+    email = str(payload.get("email") or "").strip().lower()
+    password = str(payload.get("password") or "")
+    if not email or not password:
+        raise HTTPException(400, "Informe e-mail e senha.")
+    try:
+        result = get_supabase().auth.sign_in_with_password({"email": email, "password": password})
+        session = getattr(result, "session", None)
+        user = getattr(result, "user", None)
+        if not session or not user:
+            raise ValueError("login failed")
+        profile = get_supabase().table("profiles").select("full_name,role,status").eq("id", str(user.id)).limit(1).execute().data or []
+        if profile and profile[0].get("status") != "active":
+            raise HTTPException(403, "Conta suspensa ou inativa.")
+        return {"ok": True, "access_token": session.access_token, "user": {"id": str(user.id), "email": user.email, **(profile[0] if profile else {})}}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(401, "E-mail ou senha inválidos.")
+
+@router.post("/api/auth/signup")
+async def auth_signup(payload: dict):
+    email = str(payload.get("email") or "").strip().lower()
+    password = str(payload.get("password") or "")
+    full_name = str(payload.get("full_name") or "").strip()
+    if not email or len(password) < 8:
+        raise HTTPException(400, "Informe um e-mail e uma senha com pelo menos 8 caracteres.")
+    try:
+        result = get_supabase().auth.sign_up({"email": email, "password": password, "options": {"data": {"full_name": full_name}}})
+        user = getattr(result, "user", None)
+        if not user:
+            raise ValueError("signup failed")
+        db = get_supabase()
+        is_admin = bool(settings.saas_admin_email.strip()) and email == settings.saas_admin_email.strip().lower()
+        profile = db.table("profiles").update({"full_name": full_name, "role": "admin" if is_admin else "customer"}).eq("id", str(user.id)).execute()
+        workspace = db.table("workspaces").insert({"name": f"{full_name or email.split('@')[0]} — Workspace", "owner_id": str(user.id)}).execute().data
+        if workspace:
+            workspace_id = workspace[0]["id"]
+            db.table("workspace_members").insert({"workspace_id": workspace_id, "user_id": str(user.id), "role": "owner"}).execute()
+            db.table("subscriptions").insert({"workspace_id": workspace_id, "plan": "free", "max_groups": 1, "max_users": 100}).execute()
+        session = getattr(result, "session", None)
+        return {"ok": True, "needs_email_confirmation": session is None, "access_token": getattr(session, "access_token", None), "message": "Conta criada. Verifique seu e-mail se a confirmação estiver ativada."}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, "Não foi possível criar a conta.")
+
+@router.post("/api/auth/reset")
+async def auth_reset(payload: dict):
+    email = str(payload.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(400, "Informe seu e-mail.")
+    try:
+        get_supabase().auth.reset_password_for_email(email, {"redirect_to": settings.dashboard_url.rstrip("/") + "/?reset=1"})
+    except Exception:
+        pass
+    return {"ok": True, "message": "Se o e-mail estiver cadastrado, enviaremos as instruções de redefinição."}
+
+@router.post("/api/auth/password")
+async def auth_password(payload: dict, authorization: str | None = Header(default=None)):
+    user = current_user(authorization)
+    password = str(payload.get("password") or "")
+    if len(password) < 8:
+        raise HTTPException(400, "A nova senha precisa ter pelo menos 8 caracteres.")
+    try:
+        get_supabase().auth.update_user({"password": password})
+        return {"ok": True}
+    except Exception:
+        raise HTTPException(400, "Não foi possível alterar a senha.")
+
 
 class RulesUpdate(BaseModel):
     require_photo: bool = True
@@ -24,10 +113,31 @@ class RulesUpdate(BaseModel):
     action: str = Field(pattern="^(review|restrict|ban)$")
     dry_run: bool = True
 
+@router.get("/api/admin/summary")
+async def admin_summary(authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    db = get_supabase()
+    profiles = db.table("profiles").select("id,role,status,created_at").execute().data or []
+    workspaces = db.table("workspaces").select("id,name,owner_id,created_at").execute().data or []
+    chats = db.table("telegram_chats").select("id,workspace_id,is_active").execute().data or []
+    return {"ok": True, "stats": {"customers": sum(p.get("role")=="customer" for p in profiles), "admins": sum(p.get("role")=="admin" for p in profiles), "active": sum(p.get("status")=="active" for p in profiles), "suspended": sum(p.get("status")=="suspended" for p in profiles), "workspaces": len(workspaces), "groups": sum(c.get("is_active") for c in chats)}}
+
+@router.get("/api/admin/customers")
+async def admin_customers(authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    db = get_supabase()
+    rows = db.table("profiles").select("id,full_name,role,status,created_at").order("created_at", desc=True).execute().data or []
+    return {"ok": True, "customers": rows}
+
+@router.get("/api/admin/workspaces")
+async def admin_workspaces(authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    db = get_supabase()
+    rows = db.table("workspaces").select("id,name,owner_id,created_at").order("created_at", desc=True).execute().data or []
+    return {"ok": True, "workspaces": rows}
+
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
-    if not settings.dashboard_token.strip():
-        return HTMLResponse("<h1>SentinelChat</h1><p>DASHBOARD_TOKEN não configurado.</p>", status_code=503)
     return HTMLResponse(HTML)
 
 @router.get("/api/dashboard/chats")
