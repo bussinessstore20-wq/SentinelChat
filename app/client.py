@@ -99,7 +99,25 @@ async function login(){const {error}=await sb.auth.signInWithPassword({email:$("
 async function logout(){await sb.auth.signOut();location.reload()}
 function tab(id,b){document.querySelectorAll(".section").forEach(x=>x.classList.remove("active"));$(id).classList.add("active");document.querySelectorAll(".nav button").forEach(x=>x.classList.remove("active"));b.classList.add("active");if(id==="protection")loadGroup();if(id==="members")loadMembers();if(id==="events")loadGroup();if(id==="reports")loadGroup();if(id==="subscription")loadSub();if(id==="account")loadAccount()}
 async function load(){try{me=await api("/api/cliente/me");$("auth").style.display="none";$("app").style.display="block";$("hello").textContent="Olá, "+(me.user.full_name||me.user.email)+" · "+me.user.email;$("plan").textContent=(me.subscription?.plan||"free").toUpperCase();$("gc").textContent=(me.groups||[]).filter(x=>x.is_active).length+" / "+(me.subscription?.max_groups||1);renderGroups();if(me.groups?.length){$("gsel").innerHTML=me.groups.map(g=>'<option value="'+g.id+'">'+esc(g.title||"Grupo")+"</option>").join("");}loadGroup();}catch(e){$("authmsg").textContent=e.message}}
-function renderGroups(){$("groupslist").innerHTML=me.groups?.length?me.groups.map(g=>'<div class="row"><span><b>'+esc(g.title||"Grupo")+'</b><br><span class="muted">'+esc(g.telegram_chat_id)+' · '+(g.is_active?"🟢 Ativo":"🔴 Inativo")+"</span></span><button onclick='$("+"gsel"+").value=""+g.id+"";tab("protection",document.querySelectorAll(".nav button")[2])'>Configurar</button></div>').join(""):"<p class=muted>Nenhum grupo vinculado. Adicione o bot SentinelChat ao seu grupo e dê permissão de administrador.</p>"}
+function renderGroups(){
+  const groups = me?.groups || [];
+  if(!groups.length){
+    $("groupslist").innerHTML="<p class='muted'>Nenhum grupo vinculado. Adicione o bot SentinelChat ao seu grupo e dê permissão de administrador.</p>";
+    return;
+  }
+  $("groupslist").innerHTML=groups.map(g=>{
+    const title=esc(g.title||"Grupo");
+    const id=esc(g.id);
+    const tg=esc(g.telegram_chat_id);
+    const active=g.is_active ? "🟢 Ativo" : "🔴 Inativo";
+    return "<div class='row'><span><b>"+title+"</b><br><span class='muted'>"+tg+" · "+active+"</span></span><button onclick='selectGroup(""+id+"")'>Configurar</button></div>";
+  }).join("");
+}
+function selectGroup(id){
+  $("gsel").value=id;
+  const btn=document.querySelectorAll(".nav button")[2];
+  tab("protection",btn);
+}
 async function loadGroup(){if(!me?.groups?.length)return;const id=$("gsel").value,d=await api("/api/cliente/grupos/"+id),x=d.rules||{};$("vc").textContent=d.stats.violations;$("bc").textContent=d.stats.bans;$("rules").innerHTML='<br><div class="rules"><label>Foto <input id="rp" type="checkbox" '+(x.require_photo?"checked":"")+'></label><label>Primeiro nome <input id="rf" type="checkbox" '+(x.require_first_name?"checked":"")+'></label><label>Sobrenome <input id="rl" type="checkbox" '+(x.require_last_name?"checked":"")+'></label><label>Username <input id="ru" type="checkbox" '+(x.require_username?"checked":"")+'></label><label>Ignorar admins <input id="ra" type="checkbox" '+(x.ignore_admins?"checked":"")+'></label></div><br><select id="act"><option value="review">Revisão</option><option value="restrict">Restringir</option><option value="ban">Banir</option></select> <label>DRY-RUN <input id="dry" type="checkbox" '+(x.dry_run?"checked":"")+'></label><br><br><button onclick="saveRules()">Salvar</button><p id="rmsg" class="muted"></p>';$("act").value=x.action||"review";$("homeevents").innerHTML=(d.events||[]).slice(0,8).map(e=>'<div class="row"><span><b>'+esc(e.event_type)+'</b></span><span class="muted">'+new Date(e.created_at).toLocaleString("pt-BR")+"</span></div>").join("")||"<p class=muted>Nenhuma atividade.</p>";$("eventsbox").innerHTML=$("homeevents").innerHTML;$("reportsbox").innerHTML='<div class="grid"><div class="stat">Análises<div class="value">'+d.stats.scans+'</div></div><div class="stat">Violações<div class="value">'+d.stats.violations+'</div></div><div class="stat">Restrições<div class="value">'+d.stats.restricts+'</div></div><div class="stat">Banimentos<div class="value">'+d.stats.bans+'</div></div></div>'}
 async function saveRules(){const p={require_photo:$("rp").checked,require_first_name:$("rf").checked,require_last_name:$("rl").checked,require_username:$("ru").checked,ignore_admins:$("ra").checked,action:$("act").value,dry_run:$("dry").checked};try{await api("/api/cliente/grupos/"+$("gsel").value+"/regras",{method:"PUT",body:JSON.stringify(p)});$("rmsg").textContent="Regras salvas."}catch(e){$("rmsg").textContent=e.message}}
 async function loadMembers(){if(!me?.groups?.length)return;const d=await api("/api/cliente/grupos/"+$("gsel").value+"/membros?q="+encodeURIComponent($("mq").value));$("membersbox").innerHTML=d.members.length?'<table class="table"><tr><th>Usuário</th><th>Username</th><th>Violações</th><th>Ação</th></tr>'+d.members.map(x=>"<tr><td>"+esc([x.first_name,x.last_name].filter(Boolean).join(" ")||"Sem nome")+"<br>"+x.telegram_user_id+"</td><td>"+esc(x.username?"@"+x.username:"—")+"</td><td>"+esc((x.violations||[]).join(", ")||"Nenhuma")+"</td><td>"+esc(x.action_taken||"OK")+"</td></tr>").join("")+"</table>":"<p class=muted>Nenhum membro.</p>"}
