@@ -94,7 +94,25 @@ const sb=supabase.createClient("__URL__","__KEY__");let me=null;
 const $=x=>document.getElementById(x),esc=x=>String(x??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
 async function authHeaders(){const s=(await sb.auth.getSession()).data.session;return {"Authorization":"Bearer "+(s?.access_token||""),"Content-Type":"application/json"}}
 async function api(u,o={}){const r=await fetch(u,{...o,headers:{...(o.headers||{}),...(await authHeaders())}});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.detail||"Erro");return d}
-async function signup(){const {error}=await sb.auth.signUp({email:$("email").value.trim(),password:$("password").value,options:{data:{full_name:$("name").value.trim()}}});$("authmsg").textContent=error?error.message:"Conta criada. Verifique seu e-mail se necessário."}
+async function signup(){
+  const email=$("email").value.trim();
+  const password=$("password").value;
+  const name=$("name").value.trim();
+  if(!email||!password||!name){$("authmsg").textContent="Preencha nome, e-mail e senha.";return;}
+  if(password.length<6){$("authmsg").textContent="A senha precisa ter pelo menos 6 caracteres.";return;}
+  $("authmsg").textContent="Criando conta...";
+  const {data,error}=await sb.auth.signUp({
+    email,
+    password,
+    options:{
+      data:{full_name:name},
+      emailRedirectTo:window.location.origin+"/cliente"
+    }
+  });
+  if(error){$("authmsg").textContent="Não foi possível criar a conta: "+error.message;return;}
+  if(data?.session){$("authmsg").textContent="Conta criada. Entrando...";await load();return;}
+  $("authmsg").innerHTML="<b>Conta criada com sucesso.</b><br>Enviamos um e-mail de confirmação para <b>"+esc(email)+"</b>. Confirme o e-mail e depois clique em <b>Entrar</b>.";
+}
 async function login(){const {error}=await sb.auth.signInWithPassword({email:$("email").value.trim(),password:$("password").value});if(error){$("authmsg").textContent=error.message;return}load()}
 async function logout(){await sb.auth.signOut();location.reload()}
 function tab(id,b){document.querySelectorAll(".section").forEach(x=>x.classList.remove("active"));$(id).classList.add("active");document.querySelectorAll(".nav button").forEach(x=>x.classList.remove("active"));b.classList.add("active");if(id==="protection")loadGroup();if(id==="members")loadMembers();if(id==="events")loadGroup();if(id==="reports")loadGroup();if(id==="subscription")loadSub();if(id==="account")loadAccount()}
